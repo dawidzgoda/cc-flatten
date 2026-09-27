@@ -47,12 +47,24 @@ if type(pong) ~= "table" or pong.cmd ~= "pong" then
 end
 print(("Zolw #%d OK, paliwo: %s"):format(id, tostring(pong.fuel)))
 
+print("Program: 1) wyrownaj teren  2) pochodnie")
+local choice = ask("Wybor", "1")
+local program = (choice == "2") and "torches" or "flatten"
+
 local length = tonumber(ask("Dlugosc", "16"))
 local width  = tonumber(ask("Szerokosc", "16"))
 if not length or not width then print("Zle wymiary."); return end
+local spacing
+if program == "torches" then
+  spacing = tonumber(ask("Odstep pochodni", "5"))
+  if not spacing or spacing < 1 then print("Zly odstep."); return end
+end
 local center = ask("Zolw na srodku? (t/n)", "t"):lower() == "t"
 
-rednet.send(id, { cmd = "start", length = length, width = width, center = center }, PROTOCOL)
+rednet.send(id, {
+  cmd = "start", program = program,
+  length = length, width = width, spacing = spacing, center = center,
+}, PROTOCOL)
 
 print("Czekam... (Ctrl+T aby wyjsc)")
 while true do
@@ -61,7 +73,7 @@ while true do
     if msg.cmd == "started" then
       print(("Zolw #%d pracuje: %dx%d"):format(id, length, width))
     elseif msg.cmd == "done" then
-      print(msg.ok and "Gotowe! Teren wyrownany." or "Zolw przerwal prace (blad).")
+      print(msg.ok and "Gotowe!" or "Zolw przerwal prace (blad).")
       break
     elseif msg.cmd == "error" then
       print("Blad: " .. tostring(msg.text)); break

@@ -1,5 +1,5 @@
 -- listener.lua - nasluch polecen na zolwiu (zapisz jako "startup")
--- Czeka na polecenia z pilota (remote.lua) i uruchamia flatten.
+-- Czeka na polecenia z pilota (remote.lua) i uruchamia flatten lub torches.
 
 local PROTOCOL = "flatten"
 
@@ -16,19 +16,23 @@ while true do
     rednet.send(sender, { cmd = "pong", fuel = turtle.getFuelLevel() }, PROTOCOL)
 
   elseif type(msg) == "table" and msg.cmd == "start" then
+    local program = msg.program or "flatten"
     local l, w = tonumber(msg.length), tonumber(msg.width)
-    if l and w then
-      print(("Start od #%d: flatten %d %d%s"):format(sender, l, w, msg.center and " -c" or ""))
-      rednet.send(sender, { cmd = "started" }, PROTOCOL)
-      local ok
-      if msg.center then
-        ok = shell.run("flatten", tostring(l), tostring(w), "-c")
-      else
-        ok = shell.run("flatten", tostring(l), tostring(w))
-      end
-      rednet.send(sender, { cmd = "done", ok = ok }, PROTOCOL)
-    else
+    if program ~= "flatten" and program ~= "torches" then
+      rednet.send(sender, { cmd = "error", text = "Nieznany program: " .. tostring(program) }, PROTOCOL)
+    elseif not l or not w then
       rednet.send(sender, { cmd = "error", text = "Zle wymiary" }, PROTOCOL)
+    else
+      local runArgs = { program, tostring(l), tostring(w) }
+      if program == "torches" and tonumber(msg.spacing) then
+        runArgs[#runArgs + 1] = tostring(msg.spacing)
+      end
+      if msg.center then runArgs[#runArgs + 1] = "-c" end
+
+      print(("Start od #%d: %s"):format(sender, table.concat(runArgs, " ")))
+      rednet.send(sender, { cmd = "started" }, PROTOCOL)
+      local ok = shell.run(table.unpack(runArgs))
+      rednet.send(sender, { cmd = "done", ok = ok }, PROTOCOL)
     end
   end
 end

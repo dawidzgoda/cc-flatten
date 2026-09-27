@@ -1,5 +1,5 @@
 -- update.lua - pobiera najnowsze wersje programow z GitHuba
--- Na zolwiu: flatten, startup (listener), update
+-- Na zolwiu: flatten, torches, startup (listener), update
 -- Na pocket computerze / komputerze: remote, update
 
 local BASE = "https://raw.githubusercontent.com/dawidzgoda/cc-flatten/main/"
@@ -8,6 +8,7 @@ local files
 if turtle then
   files = {
     { "flatten.lua",  "flatten" },
+    { "torches.lua",  "torches" },
     { "listener.lua", "startup" },
     { "update.lua",   "update" },
   }
