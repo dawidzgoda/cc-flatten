@@ -7,6 +7,19 @@ Programy dla CC: Tweaked (Minecraft) do wyrównywania terenu żółwiem, sterowa
 | `flatten.lua` | żółw (zapisz jako `flatten`) | wyrównuje obszar: ścina wzniesienia, zasypuje dziury |
 | `listener.lua` | żółw (zapisz jako `startup`) | czeka na polecenia z pilota przez rednet |
 | `remote.lua` | pocket computer (zapisz jako `remote`) | pilot: wybór ID żółwia, wymiary, start zdalny |
+| `update.lua` | wszędzie (zapisz jako `update`) | pobiera najnowsze wersje odpowiednich plików |
+
+## Instalacja
+
+Na żółwiu i na pocket computerze wpisz:
+
+```
+wget https://raw.githubusercontent.com/dawidzgoda/cc-flatten/main/update.lua update
+update
+```
+
+`update` sam rozpozna, czy działa na żółwiu (pobierze `flatten` i `startup`), czy na pilocie (pobierze `remote`).
+Na żółwiu po aktualizacji wpisz `reboot`. Później do aktualizacji wystarczy samo `update`.
 
 ## Wymagania
 
