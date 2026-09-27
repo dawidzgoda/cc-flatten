@@ -8,7 +8,8 @@
 --     obszar idzie do przodu i w PRAWO,
 --   * albo z flaga -c: na srodku obszaru.
 --
--- Zolw leci 1 blok nad ziemia i stawia pochodnie pod soba co <odstep> kratek.
+-- Zolw leci 1 blok nad ziemia prosto od pochodni do pochodni (nie przelatuje
+-- calego obszaru), stawia je pod soba co <odstep> kratek i wraca na start.
 -- Najlepiej dziala na terenie wyrownanym programem flatten.
 
 local TORCH = "minecraft:torch"
@@ -35,7 +36,12 @@ local x, y, z, dir = 0, 0, 0, 0
 
 local function turnRight() turtle.turnRight(); dir = (dir + 1) % 4 end
 local function turnLeft()  turtle.turnLeft();  dir = (dir + 3) % 4 end
-local function face(d) while dir ~= d do turnRight() end end
+
+-- Obraca sie najkrotsza droga (max jeden obrot w lewo).
+local function face(d)
+  if (dir + 3) % 4 == d then turnLeft() end
+  while dir ~= d do turnRight() end
+end
 
 local function forward()
   local tries = 0
@@ -132,21 +138,35 @@ end
 -- Pierwsza pochodnia ~pol odstepu od krawedzi obszaru.
 local offset = math.floor(SPACING / 2)
 
-local function isTorchSpot(px, pz)
-  -- pole startowe pomijamy: zolw na nie laduje na koniec
-  if px == 0 and pz == 0 then return false end
-  return (px - x0 - offset) % SPACING == 0 and (pz - z0 - offset) % SPACING == 0
+-- Lista miejsc na pochodnie w kolejnosci lotu: rzad po rzedzie, wezykiem.
+-- Zolw odwiedza tylko te miejsca, a nie caly obszar.
+local spots = {}
+local reverse = false
+for pz = z0 + offset, z0 + WIDTH - 1, SPACING do
+  local xs = {}
+  for px = x0 + offset, x0 + LENGTH - 1, SPACING do
+    -- pole startowe pomijamy: zolw na nie laduje na koniec
+    if not (px == 0 and pz == 0) then xs[#xs + 1] = px end
+  end
+  if reverse then
+    for i = #xs, 1, -1 do spots[#spots + 1] = { xs[i], pz } end
+  else
+    for i = 1, #xs do spots[#spots + 1] = { xs[i], pz } end
+  end
+  reverse = not reverse
 end
 
-local needed = 0
-for px = x0, x0 + LENGTH - 1 do
-  for pz = z0, z0 + WIDTH - 1 do
-    if isTorchSpot(px, pz) then needed = needed + 1 end
-  end
+-- Dlugosc trasy: start -> kolejne miejsca -> powrot, plus wzlot i ladowanie
+local pathLen, px, pz = 2, 0, 0
+for _, s in ipairs(spots) do
+  pathLen = pathLen + math.abs(s[1] - px) + math.abs(s[2] - pz)
+  px, pz = s[1], s[2]
 end
+pathLen = pathLen + math.abs(px) + math.abs(pz)
 
 print(("Obszar %dx%d, odstep %d: potrzeba %d pochodni (masz %d)."):format(
-  LENGTH, WIDTH, SPACING, needed, countTorches()))
+  LENGTH, WIDTH, SPACING, #spots, countTorches()))
+print(("Trasa: %d ruchow."):format(pathLen))
 
 local placed, skipped = 0, 0
 
@@ -162,28 +182,14 @@ local function placeTorch()
 end
 
 ---------------------------------------------------------------------------
--- Glowna petla: lot wezykiem 1 blok nad ziemia
+-- Glowna petla: lot 1 blok nad ziemia od pochodni do pochodni
 
-refuel(LENGTH * WIDTH + LENGTH + WIDTH + 10)
+refuel(pathLen + 10)
 up()
 
-if CENTER then
-  goTo(x0, z0)
-  face(0)
-end
-
-for row = 1, WIDTH do
-  for col = 1, LENGTH do
-    if isTorchSpot(x, z) then placeTorch() end
-    if col < LENGTH then forward() end
-  end
-  if row < WIDTH then
-    if row % 2 == 1 then
-      turnRight(); forward(); turnRight()
-    else
-      turnLeft(); forward(); turnLeft()
-    end
-  end
+for _, s in ipairs(spots) do
+  goTo(s[1], s[2])
+  placeTorch()
 end
 
 goTo(0, 0)
