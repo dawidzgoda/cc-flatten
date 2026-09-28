@@ -1,7 +1,7 @@
 -- update.lua - pobiera najnowsze wersje programow z GitHuba
 -- Na zolwiu: flatten, torches, startup (listener), update
 -- Na pocket computerze: remote, update
--- Na zwyklym komputerze: scada, remote, update
+-- Na zwyklym komputerze: scada, lavasensor, remote, update
 
 local BASE = "https://raw.githubusercontent.com/dawidzgoda/cc-flatten/main/"
 
@@ -19,9 +19,10 @@ elseif pocket then
     { "update.lua", "update" },
   }
 else
-  -- zwykly komputer: panel SCADA + pilot
+  -- zwykly komputer: panel SCADA, czujnik lawy, pilot
   files = {
-    { "scada.lua",  "scada" },
+    { "scada.lua",      "scada" },
+    { "lavasensor.lua", "lavasensor" },
     { "remote.lua", "remote" },
     { "update.lua", "update" },
   }

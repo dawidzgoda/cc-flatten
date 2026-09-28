@@ -13,7 +13,8 @@
 --   * LAWA -> zapas lawy ze zbiornikow i skrzyn z wiadrami podlaczonych
 --     do komputera (bezposrednio albo wired modemem + kablem).
 
-local PROTOCOL = "flatten"
+local PROTOCOL      = "flatten"
+local LAVA_PROTOCOL = "scada_lava"   -- dane z czujnikow lavasensor
 local REFRESH  = 5      -- sekundy miedzy odpytaniami
 local OFFLINE  = 15     -- po tylu sekundach bez odpowiedzi zolw jest OFFLINE
 local LOW_FUEL = 500
@@ -156,8 +157,30 @@ local function scanLavaDemo()
   }
 end
 
+-- Dane z czujnikow lawy (lavasensor) na innych komputerach:
+-- id -> { label, total, sources, last }
+local remoteLava = {}
+
+local function shortName(n) return n:match(":(.+)$") or n end
+
 local function sampleLava()
-  lava.total, lava.sources = (DEMO and scanLavaDemo or scanLava)()
+  local total, sources = (DEMO and scanLavaDemo or scanLava)()
+
+  -- doliczamy czujniki zdalne; nieaktywny czujnik pokazujemy jako OFFLINE
+  for id, r in pairs(remoteLava) do
+    local prefix = (r.label or ("#" .. id)) .. "/"
+    if isOnline(r) then
+      for _, s in ipairs(r.sources) do
+        sources[#sources + 1] = { name = prefix .. shortName(s.name), amount = s.amount }
+      end
+      total = total + r.total
+    else
+      sources[#sources + 1] = { name = prefix .. "OFFLINE", amount = 0, offline = true }
+    end
+  end
+  table.sort(sources, function(a, b) return a.amount > b.amount end)
+
+  lava.total, lava.sources = total, sources
   local hist = lava.history
   hist[#hist + 1] = { t = now(), v = lava.total }
   if #hist > HISTORY_MAX then table.remove(hist, 1) end
@@ -423,8 +446,9 @@ local function drawLava()
       y = y + 1
       break
     end
-    put(2, y, fit(s.name, w - 14), colors.white, colors.black)
-    put(w - 10, y, ("%10s"):format(buckets(s.amount)), colors.orange, colors.black)
+    put(2, y, fit(s.name, w - 14), s.offline and colors.red or colors.white, colors.black)
+    put(w - 10, y, ("%10s"):format(s.offline and "-" or buckets(s.amount)),
+        colors.orange, colors.black)
     y = y + 1
   end
   if #lava.sources == 0 then
@@ -517,8 +541,13 @@ end
 local function receiver()
   if DEMO then while true do os.pullEvent("__never") end end
   while true do
-    local id, msg = rednet.receive(PROTOCOL)
-    if type(msg) == "table" then
+    local id, msg, proto = rednet.receive()
+    if proto == LAVA_PROTOCOL and type(msg) == "table" and msg.cmd == "lava" then
+      remoteLava[id] = {
+        label = msg.label, total = tonumber(msg.total) or 0,
+        sources = type(msg.sources) == "table" and msg.sources or {}, last = now(),
+      }
+    elseif proto == PROTOCOL and type(msg) == "table" then
       if msg.cmd == "pong" then
         known[id] = { data = msg, last = now() }
       elseif msg.cmd == "started" then

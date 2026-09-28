@@ -9,6 +9,7 @@ Programy dla CC: Tweaked (Minecraft) do wyrównywania terenu i stawiania pochodn
 | `listener.lua` | żółw (zapisz jako `startup`) | czeka na polecenia z pilota przez rednet |
 | `remote.lua` | pocket computer (zapisz jako `remote`) | pilot: wybór ID żółwia, wymiary, start zdalny |
 | `scada.lua` | komputer z advanced monitorem (zapisz jako `scada`) | panel stanu żółwi + dotykowe uruchamianie programów; zakładka LAWA (zapas ze zbiorników i skrzyń, trend, wykres); `scada demo` = dane testowe |
+| `lavasensor.lua` | komputer przy zbiornikach (zapisz jako `lavasensor`) | czujnik lawy: wysyła zapas bezprzewodowo do SCADA; `lavasensor install` = autostart |
 | `update.lua` | wszędzie (zapisz jako `update`) | pobiera najnowsze wersje odpowiednich plików |
 
 ## Instalacja
