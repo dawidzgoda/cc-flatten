@@ -17,7 +17,12 @@ local LAVA_BUCKET = "minecraft:lava_bucket"
 local ADMIN_PROTOCOL = "scada_admin"   -- zdalny UPDATE ze SCADA
 local STATUS_ROW = 1   -- wiersze 1-4 ekranu (energysensor 6-9, scada 11)
 
-if ({ ... })[1] == "install" then shell.run("autostart", "add", "lavasensor"); return end
+if ({ ... })[1] == "install" then
+  -- stary update nie pobieral 'autostart' - dociagnij go w razie potrzeby
+  if not fs.exists("autostart") and not fs.exists("autostart.lua") then shell.run("update") end
+  shell.run("autostart", "add", "lavasensor")
+  return
+end
 
 local modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
 if not modem then error("Brak wireless/ender modemu!") end

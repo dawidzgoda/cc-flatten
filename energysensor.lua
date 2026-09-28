@@ -13,7 +13,12 @@ local INTERVAL        = 5            -- sekundy miedzy wysylkami
 local ADMIN_PROTOCOL  = "scada_admin"  -- zdalny UPDATE ze SCADA
 local STATUS_ROW      = 6            -- wiersze 6-9 ekranu (lavasensor 1-4, scada 11)
 
-if ({ ... })[1] == "install" then shell.run("autostart", "add", "energysensor"); return end
+if ({ ... })[1] == "install" then
+  -- stary update nie pobieral 'autostart' - dociagnij go w razie potrzeby
+  if not fs.exists("autostart") and not fs.exists("autostart.lua") then shell.run("update") end
+  shell.run("autostart", "add", "energysensor")
+  return
+end
 
 ---------------------------------------------------------------------------
 

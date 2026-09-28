@@ -1,7 +1,8 @@
 -- update.lua - pobiera najnowsze wersje programow z GitHuba
 -- Na zolwiu: flatten, torches, startup (listener), update
 -- Na pocket computerze: remote, pscada, update
--- Na zwyklym komputerze: scada, lavasensor, energysensor, autostart, remote, update
+-- Na zwyklym komputerze: scada, lavasensor, energysensor, autostart, mkdisk,
+--                        remote, update
 
 local BASE = "https://raw.githubusercontent.com/dawidzgoda/cc-flatten/main/"
 
@@ -26,6 +27,7 @@ else
     { "lavasensor.lua", "lavasensor" },
     { "energysensor.lua", "energysensor" },
     { "autostart.lua",  "autostart" },
+    { "mkdisk.lua",     "mkdisk" },
     { "remote.lua", "remote" },
     { "update.lua", "update" },
   }

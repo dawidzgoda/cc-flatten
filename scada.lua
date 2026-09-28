@@ -40,7 +40,12 @@ local HISTORY_MAX = 120     -- probek historii (120 x 5 s = 10 min)
 local DEMO = ({ ... })[1] == "demo"
 
 -- scada install -> uruchamiaj SCADA automatycznie po starcie komputera
-if ({ ... })[1] == "install" then shell.run("autostart", "add", "scada"); return end
+if ({ ... })[1] == "install" then
+  -- stary update nie pobieral 'autostart' - dociagnij go w razie potrzeby
+  if not fs.exists("autostart") and not fs.exists("autostart.lua") then shell.run("update") end
+  shell.run("autostart", "add", "scada")
+  return
+end
 
 local ADMIN_PROTOCOL = "scada_admin"   -- zdalny UPDATE zolwi i czujnikow
 local TERM_ROW = 11                    -- wiersz statusu na ekranie komputera

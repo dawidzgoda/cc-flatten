@@ -13,6 +13,8 @@ Programy dla CC: Tweaked (Minecraft) do wyrównywania terenu i stawiania pochodn
 | `energysensor.lua` | komputer przy magazynach FE (zapisz jako `energysensor`) | czujnik prądu (np. Powah): wysyła stan FE do SCADA; `energysensor install` = autostart |
 | `pscada.lua` | pocket computer (zapisz jako `pscada`) | mini SCADA: żółwie, lawa, prąd na ekranie pocketa; `pscada demo` = dane testowe |
 | `autostart.lua` | zwykły komputer (zapisz jako `autostart`) | autostart SCADA i czujników z auto-restartem |
+| `mkdisk.lua` | komputer ze stacją dysków (zapisz jako `mkdisk`) | nagrywa dyskietkę instalacyjną |
+| `installer.lua` | dyskietka (jako `startup.lua`) | instalator offline dla żółwi i komputerów |
 | `update.lua` | wszędzie (zapisz jako `update`) | pobiera najnowsze wersje odpowiednich plików |
 
 ## Instalacja
@@ -83,3 +85,16 @@ reboot
 `autostart list` pokazuje, co startuje, a `autostart remove <program>` usuwa program z autostartu. Kilka programów może działać razem na jednym komputerze. Program, który się wywali, uruchamia się ponownie po 5 s.
 
 **Przycisk UPDATE** (zakładka ALM na monitorze SCADA, trzeba go dotknąć dwa razy) wysyła polecenie aktualizacji do wszystkich żółwi i czujników, a potem aktualizuje i restartuje samą SCADA. Żółwie, które akurat pracują, są pomijane. Pockety aktualizujesz ręcznie przez `update`.
+
+## Dyskietka instalacyjna
+
+Instalacja bez internetu na żółwiach i komputerach:
+
+1. Na komputerze z internetem podłącz **stację dysków** (disk drive), włóż dyskietkę i wpisz `mkdisk`. Program pobierze wszystkie programy na dyskietkę i doda instalator.
+2. Postaw stację z dyskietką obok żółwia lub komputera i zrestartuj urządzenie (przytrzymaj Ctrl+R albo wpisz `reboot`).
+3. Instalator uruchomi się sam:
+   - **żółw**: kopiuje `flatten`, `torches`, `startup` (listener) i `update`, pyta o nazwę,
+   - **komputer**: pytasz o rolę (SCADA, czujnik lawy, czujnik prądu, oba czujniki, wszystko naraz), a instalator ustawia autostart i pyta o nazwę.
+4. Na koniec wysuwa dyskietkę i restartuje urządzenie. Dyskietkę podnosisz i używasz przy następnym.
+
+Jeśli urządzenie ma już oprogramowanie, instalator czeka 10 s na Enter (ponowna instalacja), a potem uruchamia normalny start.
