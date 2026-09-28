@@ -3,13 +3,16 @@
 -- Uzycie:  pscada        - dane z zolwi i czujnikow (lavasensor/energysensor)
 --          pscada demo   - dane testowe
 --
--- Obsluga: dotknij zakladki u gory albo klawisze 1/2/3, Q - wyjscie.
+-- Obsluga: dotknij zakladki u gory albo klawisze 1/2/3/4, Q - wyjscie.
+--          ALM (4): lista alarmow ze SCADA; dotknij alarmu = potwierdz,
+--          A = potwierdz wszystkie. Alarmy wymagaja dzialajacej SCADA.
 -- Pojemnosc lawy do paska (mB):  set scada.lava_max 720000
 -- Prog alarmu lawy (mB):         set scada.lava_low 50000
 
 local PROTOCOL        = "flatten"
 local LAVA_PROTOCOL   = "scada_lava"
 local ENERGY_PROTOCOL = "scada_energy"
+local ALARM_PROTOCOL  = "scada_alarm"
 local REFRESH         = 5
 local OFFLINE         = 15
 local ENERGY_LOW_PCT  = 20
@@ -36,6 +39,43 @@ local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 local turtles, lavaSensors, energySensors = {}, {}, {}
 local lavaHist, energyHist = {}, {}
 local view = "turtles"
+
+-- Alarmy ze SCADA
+local alarmList, scadaId, lastSync = {}, nil, 0
+local seenAlarms = {}        -- klucze juz widzianych alarmow
+local newAlarmUntil = 0      -- do kiedy pokazywac "NOWY ALARM"
+local alarmRows = {}         -- wiersz ekranu -> klucz alarmu
+
+local function unackedCount()
+  local n = 0
+  for _, a in ipairs(alarmList) do if not a.acked then n = n + 1 end end
+  return n
+end
+
+local function setAlarms(list)
+  alarmList = list
+  for _, a in ipairs(list) do
+    if a.active and not a.acked and not seenAlarms[a.key .. a.since] then
+      newAlarmUntil = now() + 10000
+    end
+    seenAlarms[a.key .. a.since] = true
+  end
+end
+
+local function sendAck(key)
+  if DEMO then
+    for i = #alarmList, 1, -1 do
+      local a = alarmList[i]
+      if key == nil or a.key == key then
+        a.acked = true
+        if not a.active then table.remove(alarmList, i) end
+      end
+    end
+    return
+  end
+  if not scadaId then return end
+  rednet.send(scadaId, { cmd = "ack", key = key, all = key == nil }, ALARM_PROTOCOL)
+end
 
 ---------------------------------------------------------------------------
 -- Dane
@@ -71,6 +111,16 @@ local function demoTick()
   lavaSensors[5] = { last = now(), label = "Zbiorniki", total = math.floor(400000 + 200000 * math.sin(t / 20)) }
   energySensors[6] = { last = now(), label = "Prad", capacity = 70e6,
                        energy = math.floor(35e6 + 30e6 * math.sin(t / 30)) }
+  if #alarmList == 0 then
+    setAlarms({
+      { key = "t_wait_3", text = "Zolw #3 Kopacz: brak paliwa", crit = true,
+        since = now(), active = true, acked = false },
+      { key = "t_off_21", text = "Zolw #21 offline", crit = false,
+        since = now() - 300000, active = true, acked = true },
+      { key = "t_fuel_7", text = "Zolw #7: malo paliwa (320)", crit = false,
+        since = now() - 600000, active = false, acked = false },
+    })
+  end
 end
 
 ---------------------------------------------------------------------------
@@ -119,13 +169,16 @@ local TABS = {
   { x = 1,  label = " ZOLW ", view = "turtles" },
   { x = 7,  label = " LAWA ", view = "lava" },
   { x = 13, label = " PRAD ", view = "energy" },
+  { x = 19, label = " ALM ",  view = "alarms" },
 }
 
 local function drawTabs(lava, en, cap)
   fillRow(1, c(colors.blue, colors.black))
+  local unacked = unackedCount()
   local alarm = {
     lava = #lavaHist > 0 and next(lavaSensors) ~= nil and lava < lavaLow,
     energy = cap > 0 and en / cap * 100 < ENERGY_LOW_PCT,
+    alarms = unacked > 0,
   }
   for _, t in ipairs(TABS) do
     local active = view == t.view
@@ -133,8 +186,9 @@ local function drawTabs(lava, en, cap)
             or (alarm[t.view] and c(colors.red) or c(colors.gray, colors.black))
     put(t.x, 1, t.label, active and colors.black or colors.white, bg)
   end
-  local clock = textutils.formatTime(os.time(), true)
-  put(w - #clock + 1, 1, clock, colors.white, c(colors.blue, colors.black))
+  if unacked > 0 then
+    put(w - 2, 1, ("!%-2d"):format(math.min(unacked, 99)), c(colors.red), c(colors.blue, colors.black))
+  end
 end
 
 local function drawTurtles()
@@ -146,6 +200,7 @@ local function drawTurtles()
     local e, d = turtles[id], turtles[id].data
     local st, col
     if not isOnline(e) then st, col = "OFFLN", colors.red
+    elseif d.waiting then st, col = "BRAK", colors.orange
     elseif d.state == "work" then st, col = "PRACA", colors.yellow
     else st, col = "CZEKA", colors.lime end
     put(1, y, fit("#" .. id, 4), colors.white, colors.black)
@@ -157,7 +212,10 @@ local function drawTurtles()
     local fc = (tonumber(d.fuel) and d.fuel < LOW_FUEL) and c(colors.red) or colors.white
     put(17, y, ("%7s"):format(fuel:sub(1, 7)), fc, colors.black)
     y = y + 1
-    if d.label and y <= h - 1 then
+    if isOnline(e) and d.waiting and y <= h - 1 then
+      put(2, y, fit("! " .. d.waiting, w - 2), c(colors.orange), colors.black)
+      y = y + 1
+    elseif d.label and y <= h - 1 then
       put(2, y, fit(d.label, w - 2), c(colors.lightGray), colors.black)
       y = y + 1
     end
@@ -222,6 +280,42 @@ local function drawEnergy(en, cap)
   if y == 8 then put(1, 8, "Brak czujnikow pradu", c(colors.lightGray), colors.black) end
 end
 
+-- Lista alarmow: kazdy alarm zajmuje 2 wiersze (czas + tekst)
+local function drawAlarms()
+  alarmRows = {}
+  if not DEMO and (not scadaId or now() - lastSync > OFFLINE * 1000) then
+    put(1, 3, "Brak polaczenia ze SCADA", c(colors.red), colors.black)
+    put(1, 4, "(alarmy liczy duza SCADA)", c(colors.lightGray), colors.black)
+    return
+  end
+
+  local y = 3
+  for _, a in ipairs(alarmList) do
+    if y + 1 > h - 3 then
+      put(1, y, "...", c(colors.lightGray), colors.black)
+      break
+    end
+    local col = colors.yellow                                   -- ustapil
+    if a.active and not a.acked then col = colors.red
+    elseif a.active then col = colors.orange end
+    local head = os.date("%H:%M", math.floor(a.since / 1000))
+                 .. (a.crit and " ALARM" or " uwaga")
+                 .. (a.active and "" or " (ok)")
+                 .. (a.acked and "" or " *")
+    put(1, y, fit(head, w), c(col), colors.black)
+    put(2, y + 1, fit(a.text, w - 1), colors.white, colors.black)
+    alarmRows[y], alarmRows[y + 1] = a.key, a.key
+    y = y + 2
+  end
+  if #alarmList == 0 then
+    put(1, 3, "Brak alarmow - OK", c(colors.lime), colors.black)
+  end
+
+  if unackedCount() > 0 then
+    put(1, h - 1, " POTWIERDZ WSZYSTKIE (A) ", colors.white, c(colors.green, colors.black))
+  end
+end
+
 local function draw()
   w, h = term.getSize()
   term.setBackgroundColor(colors.black)
@@ -231,11 +325,17 @@ local function draw()
 
   if view == "lava" then drawLava(lava)
   elseif view == "energy" then drawEnergy(en, cap)
+  elseif view == "alarms" then drawAlarms()
   else drawTurtles() end
 
-  fillRow(h, c(colors.gray, colors.black))
-  put(1, h, DEMO and "DEMO | 1/2/3, Q-wyjscie" or "1/2/3 zakladki, Q-wyjscie",
-      colors.white, c(colors.gray, colors.black))
+  if now() < newAlarmUntil then
+    fillRow(h, c(colors.red, colors.white))
+    put(1, h, "!! NOWY ALARM - klawisz 4", colors.white, c(colors.red, colors.white))
+  else
+    fillRow(h, c(colors.gray, colors.black))
+    put(1, h, DEMO and "DEMO | 1-4, Q-wyjscie" or "1-4 zakladki, Q-wyjscie",
+        colors.white, c(colors.gray, colors.black))
+  end
 end
 
 ---------------------------------------------------------------------------
@@ -253,6 +353,11 @@ local function receiver()
       elseif proto == ENERGY_PROTOCOL and msg.cmd == "energy" then
         energySensors[id] = { label = msg.label, energy = tonumber(msg.energy) or 0,
                               capacity = tonumber(msg.capacity) or 0, last = now() }
+      elseif proto == ALARM_PROTOCOL and msg.cmd == "alarms" and type(msg.list) == "table" then
+        scadaId, lastSync = id, now()
+        local before = newAlarmUntil
+        setAlarms(msg.list)
+        if newAlarmUntil ~= before or view == "alarms" then draw() end
       end
     end
   end
@@ -278,10 +383,17 @@ local function ui()
         if x >= t.x and x < t.x + #t.label then view = t.view end
       end
       draw()
+    elseif ev == "mouse_click" and view == "alarms" then
+      if y == h - 1 and unackedCount() > 0 then sendAck(nil)
+      elseif alarmRows[y] then sendAck(alarmRows[y]) end
+      newAlarmUntil = 0
+      draw()
     elseif ev == "key" then
       if a == keys.one then view = "turtles"
       elseif a == keys.two then view = "lava"
       elseif a == keys.three then view = "energy"
+      elseif a == keys.four then view = "alarms"; newAlarmUntil = 0
+      elseif a == keys.a and view == "alarms" then sendAck(nil)
       elseif a == keys.q then return end
       draw()
     end

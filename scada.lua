@@ -95,6 +95,9 @@ local function tickDemo()
       e.last = now()
       if e.data.state == "work" then
         e.data.progress = (e.data.progress or 0) + 0.1
+        -- demo alarmu: zolw #3 "czeka na paliwo" w polowie pracy
+        e.data.waiting = (id == 3 and e.data.progress > 0.5 and e.data.progress < 0.8)
+                         and "brak paliwa" or nil
         if e.data.progress >= 1 then
           e.data.state, e.data.program, e.data.progress = "idle", nil, nil
           setMsg(("Zolw #%d skonczyl"):format(id), colors.lime)
@@ -293,6 +296,157 @@ local function fmtFE(n)
 end
 
 ---------------------------------------------------------------------------
+-- Alarmy
+--
+-- Stany alarmu: AKTYWNY niepotwierdzony (czerwony, miga), AKTYWNY potwierdzony
+-- (pomaranczowy), USTAPIL niepotwierdzony (zolty). Potwierdzony i ustapiony
+-- znika z listy. Kazda zmiana trafia do dziennika zdarzen.
+
+local ALARM_PROTOCOL = "scada_alarm"
+-- Push na prawdziwy telefon przez ntfy.sh (aplikacja ntfy):
+--   set scada.ntfy <twoj_tajny_temat>     (pusty = wylaczone)
+local NTFY_TOPIC = settings.get("scada.ntfy")
+if NTFY_TOPIC == "" then NTFY_TOPIC = nil end
+
+local alarms   = {}   -- key -> { key, text, crit, since, active, acked }
+local latched  = {}   -- key -> { text, crit } alarmy zdarzeniowe, trwaja do potwierdzenia
+local alarmLog = {}   -- { t, text, color }, najnowsze na poczatku
+local speaker  = peripheral.find("speaker")
+local blink    = false
+
+local function logEvent(text, color)
+  table.insert(alarmLog, 1, { t = now(), text = text, color = color })
+  if #alarmLog > 30 then table.remove(alarmLog) end
+end
+
+local function notifyPhone(a)
+  if not NTFY_TOPIC or not http or DEMO then return end
+  pcall(http.post, "https://ntfy.sh/" .. NTFY_TOPIC, a.text, {
+    Title = a.crit and "SCADA ALARM" or "SCADA ostrzezenie",
+    Priority = a.crit and "high" or "default",
+    Tags = a.crit and "rotating_light" or "warning",
+  })
+end
+
+-- Wszystkie warunki alarmowe w tej chwili: key -> { text, crit }
+local function alarmConditions()
+  local c = {}
+  local function add(key, text, crit) c[key] = { text = text, crit = crit } end
+
+  if #lava.history > 0 and #lava.sources > 0 and lava.total < lavaLow then
+    add("lava_low", "Malo lawy: " .. buckets(lava.total), true)
+  end
+  if energyLow() then
+    add("energy_low", ("Malo pradu: %d%%"):format(math.floor(energyPct())), true)
+  end
+
+  for id, e in pairs(known) do
+    local name = "Zolw #" .. id .. (e.data.label and (" " .. e.data.label) or "")
+    if not isOnline(e) then
+      add("t_off_" .. id, name .. " offline", false)
+    else
+      local fuel = tonumber(e.data.fuel)
+      if fuel and fuel < LOW_FUEL then
+        add("t_fuel_" .. id, ("%s: malo paliwa (%d)"):format(name, fuel), false)
+      end
+      if e.data.waiting then
+        add("t_wait_" .. id, name .. ": " .. e.data.waiting, true)
+      end
+    end
+  end
+
+  for id, r in pairs(remoteLava) do
+    if not isOnline(r) then add("s_lava_" .. id, "Czujnik lawy " .. (r.label or id) .. " offline", false) end
+  end
+  for id, r in pairs(remoteEnergy) do
+    if not isOnline(r) then add("s_en_" .. id, "Czujnik pradu " .. (r.label or id) .. " offline", false) end
+  end
+
+  for key, l in pairs(latched) do c[key] = l end
+  return c
+end
+
+local function alarmList()
+  local list = {}
+  for _, a in pairs(alarms) do list[#list + 1] = a end
+  local function rank(a) return (a.active and 0 or 2) + (a.acked and 1 or 0) end
+  table.sort(list, function(x, y)
+    if rank(x) ~= rank(y) then return rank(x) < rank(y) end
+    if x.crit ~= y.crit then return x.crit end
+    return x.since > y.since
+  end)
+  return list
+end
+
+local function alarmCounts()
+  local active, unacked, critUnacked = 0, 0, false
+  for _, a in pairs(alarms) do
+    if a.active then active = active + 1 end
+    if not a.acked then
+      unacked = unacked + 1
+      if a.active and a.crit then critUnacked = true end
+    end
+  end
+  return active, unacked, critUnacked
+end
+
+-- Wysyla pelna liste alarmow do pocketow (pscada)
+local function syncAlarms()
+  if DEMO then return end
+  local list = {}
+  for _, a in ipairs(alarmList()) do
+    list[#list + 1] = { key = a.key, text = a.text, crit = a.crit,
+                        since = a.since, active = a.active, acked = a.acked }
+  end
+  rednet.broadcast({ cmd = "alarms", list = list }, ALARM_PROTOCOL)
+end
+
+local function evalAlarms()
+  local cond = alarmConditions()
+
+  for key, cnd in pairs(cond) do
+    local a = alarms[key]
+    if not a or not a.active then
+      a = { key = key, text = cnd.text, crit = cnd.crit, since = now(), active = true, acked = false }
+      alarms[key] = a
+      logEvent((cnd.crit and "ALARM: " or "UWAGA: ") .. cnd.text,
+               cnd.crit and colors.red or colors.orange)
+      if speaker then pcall(speaker.playNote, cnd.crit and "bell" or "pling", 3, 12) end
+      notifyPhone(a)
+    else
+      a.text = cnd.text
+    end
+  end
+
+  for key, a in pairs(alarms) do
+    if a.active and not cond[key] then
+      a.active = false
+      logEvent("OK: " .. a.text, colors.lime)
+      if a.acked then alarms[key] = nil end
+    end
+  end
+
+  -- syrena co cykl, dopoki jest niepotwierdzony alarm krytyczny
+  local _, _, critUnacked = alarmCounts()
+  if critUnacked and speaker then pcall(speaker.playNote, "bell", 3, 18) end
+
+  syncAlarms()
+end
+
+local function ackAlarm(key)
+  local a = alarms[key]
+  if not a or a.acked then return end
+  a.acked = true
+  latched[key] = nil
+  logEvent("Potwierdzono: " .. a.text, colors.lightGray)
+  if not a.active then alarms[key] = nil end
+end
+
+local function ackAll()
+  for key in pairs(alarms) do ackAlarm(key) end
+end
+
+---------------------------------------------------------------------------
 -- Rysowanie
 
 local w, h
@@ -337,6 +491,7 @@ end
 
 local function stateOf(e)
   if not isOnline(e) then return "OFFLINE", colors.red end
+  if e.data.waiting then return "BRAK", colors.orange end
   if e.data.state == "work" then return "PRACA", colors.yellow end
   return "CZEKA", colors.lime
 end
@@ -348,17 +503,26 @@ local function drawHeader(title)
   put(w - #clock, 1, clock, colors.white, colors.blue)
 end
 
--- Naglowek z zakladkami ZOLWIE / LAWA / PRAD
+-- Naglowek z zakladkami ALARM / ZOLWIE / LAWA / PRAD
 local function drawTabs()
   fillRow(1, colors.blue)
-  if DEMO then put(1, 1, " DEMO  ", colors.yellow, colors.blue)
-  else put(1, 1, " SCADA ", colors.white, colors.blue) end
 
   local function tab(x, label, name, alarm)
     local active = (view == name)
     local bg = active and colors.lightBlue or (alarm and colors.red or colors.gray)
     button(x, 1, label, bg, function() view = name end, active and colors.black or colors.white)
   end
+
+  -- ALARM: zielony = spokoj, czerwony migajacy = niepotwierdzone,
+  -- pomaranczowy = aktywne potwierdzone
+  local activeN, unacked = alarmCounts()
+  local abg, afg = colors.green, colors.white
+  if unacked > 0 then abg = blink and colors.red or colors.gray
+  elseif activeN > 0 then abg = colors.orange end
+  if view == "alarms" then abg, afg = colors.lightBlue, colors.black end
+  local alabel = (activeN + unacked) > 0 and fit((" ALM %d"):format(math.max(activeN, unacked)), 7)
+                 or (DEMO and " DEMO  " or " OK    ")
+  button(1, 1, alabel, abg, function() view = "alarms" end, afg)
   tab(9, " ZOLWIE ", "list")
   tab(18, " LAWA ", "lava", #lava.history > 0 and lava.total < lavaLow)
   tab(25, " PRAD ", "energy", energyLow())
@@ -690,6 +854,63 @@ local function drawEnergy()
   end
 end
 
+local function hhmm(ms) return os.date("%H:%M", math.floor(ms / 1000)) end
+
+local function drawAlarms()
+  drawTabs()
+
+  fillRow(2, colors.gray)
+  put(2, 2, "CZAS  ALARM (dotknij = potwierdz)", colors.lightGray, colors.gray)
+
+  local list = alarmList()
+  local maxRows = math.max(3, math.floor((h - 6) / 2))
+  local y = 3
+  for i, a in ipairs(list) do
+    if i > maxRows then
+      put(2, y, ("... i %d wiecej"):format(#list - maxRows), colors.lightGray, colors.black)
+      y = y + 1
+      break
+    end
+    local fg, bg = colors.yellow, colors.black          -- ustapil, niepotwierdzony
+    if a.active and not a.acked then
+      fg, bg = colors.red, colors.black
+      if blink and a.crit then fg, bg = colors.white, colors.red end
+    elseif a.active then
+      fg = colors.orange
+    end
+    local txt = ("%s %s%s%s"):format(hhmm(a.since), a.crit and "!" or " ",
+                                      a.active and "" or "(ok) ", a.text)
+    button(1, y, " " .. fit(txt, w - 1), bg, function() ackAlarm(a.key) end, fg)
+    y = y + 1
+  end
+  if #list == 0 then
+    put(2, y, "Brak alarmow - wszystko OK", colors.lime, colors.black)
+    y = y + 1
+  end
+
+  local _, unacked = alarmCounts()
+  y = y + 1
+  if unacked > 0 then
+    button(2, y, " POTWIERDZ WSZYSTKIE ", colors.green, ackAll)
+  end
+  y = y + 2
+
+  -- Dziennik zdarzen
+  if y < h - 1 then
+    fillRow(y, colors.gray)
+    put(2, y, "ZDARZENIA", colors.lightGray, colors.gray)
+    y = y + 1
+    for _, ev in ipairs(alarmLog) do
+      if y > h - 1 then break end
+      put(2, y, fit(hhmm(ev.t) .. " " .. ev.text, w - 2), ev.color, colors.black)
+      y = y + 1
+    end
+  end
+
+  drawFooter(("ntfy: %s | syrena: %s"):format(NTFY_TOPIC and "ON" or "off",
+                                              speaker and "ON" or "brak"))
+end
+
 local function draw()
   w, h = mon.getSize()
   buttons = {}
@@ -706,6 +927,7 @@ local function draw()
   elseif view == "lava" then drawLava()
   elseif view == "lavacfg" then drawLavaCfg()
   elseif view == "energy" then drawEnergy()
+  elseif view == "alarms" then drawAlarms()
   else drawList() end
 end
 
@@ -728,6 +950,11 @@ local function receiver()
         energy = tonumber(msg.energy) or 0, capacity = tonumber(msg.capacity) or 0,
         sources = type(msg.sources) == "table" and msg.sources or {}, last = now(),
       }
+    elseif proto == ALARM_PROTOCOL and type(msg) == "table" and msg.cmd == "ack" then
+      -- potwierdzenie z pocketa (pscada)
+      if msg.all then ackAll() elseif msg.key then ackAlarm(msg.key) end
+      syncAlarms()
+      draw()
     elseif proto == PROTOCOL and type(msg) == "table" then
       if msg.cmd == "pong" then
         known[id] = { data = msg, last = now() }
@@ -738,6 +965,12 @@ local function receiver()
       elseif msg.cmd == "done" then
         setMsg(("Zolw #%d: %s"):format(id, msg.ok and "gotowe!" or "przerwal (blad)"),
                msg.ok and colors.lime or colors.red)
+        if msg.ok then
+          logEvent(("Zolw #%d skonczyl prace"):format(id), colors.lime)
+        else
+          latched["t_err_" .. id] = { text = ("Zolw #%d przerwal prace (blad)"):format(id), crit = true }
+          evalAlarms()
+        end
         draw()
       elseif msg.cmd == "error" then
         setMsg(("Zolw #%d: %s"):format(id, tostring(msg.text)), colors.red)
@@ -754,14 +987,26 @@ local function pinger()
     sampleEnergy()
     if DEMO then
       tickDemo()
+      evalAlarms()
       draw()
       sleep(REFRESH)
     else
       rednet.broadcast({ cmd = "ping" }, PROTOCOL)
       sleep(1.5) -- czas na odpowiedzi
+      evalAlarms()
       draw()
       sleep(REFRESH - 1.5)
     end
+  end
+end
+
+-- Miganie niepotwierdzonych alarmow (odswieza ekran tylko gdy sa takie alarmy)
+local function blinker()
+  while true do
+    sleep(1)
+    blink = not blink
+    local _, unacked = alarmCounts()
+    if unacked > 0 then draw() end
   end
 end
 
@@ -773,6 +1018,7 @@ local function ui()
       for _, b in ipairs(buttons) do
         if y == b.y and x >= b.x1 and x <= b.x2 then b.action(); break end
       end
+      if view == "alarms" then syncAlarms() end -- potwierdzenia -> pockety
       draw()
     elseif ev == "monitor_resize" then
       draw()
@@ -787,4 +1033,4 @@ print("SCADA dziala na monitorze. Ctrl+T - wyjscie.")
 
 if DEMO then initDemo() end
 draw()
-parallel.waitForAny(receiver, pinger, ui)
+parallel.waitForAny(receiver, pinger, ui, blinker)

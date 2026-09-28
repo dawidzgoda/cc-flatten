@@ -21,6 +21,7 @@ local function sendPong(to)
     state = status.state,
     program = status.program,
     progress = status.state == "work" and _G.ccProgress or nil,
+    waiting = status.state == "work" and _G.ccWaiting or nil, -- np. "brak paliwa"
   }, PROTOCOL)
 end
 
@@ -76,7 +77,7 @@ while true do
         busyResponder
       )
       status.state, status.program = "idle", nil
-      _G.ccProgress = nil
+      _G.ccProgress, _G.ccWaiting = nil, nil
 
       rednet.send(sender, { cmd = "done", ok = ok }, PROTOCOL)
     end

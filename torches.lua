@@ -104,7 +104,9 @@ local function selectTorch()
       if isTorch(s) then turtle.select(s); return end
     end
     print("Brak pochodni! Doloz do ekwipunku...")
+    _G.ccWaiting = "brak pochodni" -- widoczne na SCADA
     os.pullEvent("turtle_inventory")
+    _G.ccWaiting = nil
   end
 end
 
@@ -120,7 +122,9 @@ local function refuel(needed)
     end
     if not ok then
       print(("Malo paliwa (%d/%d). Dodaj wegiel..."):format(turtle.getFuelLevel(), needed))
+      _G.ccWaiting = "brak paliwa" -- widoczne na SCADA
       os.pullEvent("turtle_inventory")
+      _G.ccWaiting = nil
     end
   end
 end

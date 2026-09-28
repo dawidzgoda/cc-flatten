@@ -52,3 +52,20 @@ torches <dlugosc> <szerokosc> [odstep=5] [-c]
 Zdalnie: na pocket computerze uruchom `remote`, podaj ID żółwia, wybierz program i wymiary.
 
 Żółw stoi **na docelowym poziomie** — blok pod nim to przyszła powierzchnia.
+
+## Alarmy
+
+SCADA sama pilnuje stanu i podnosi alarmy:
+
+| Alarm | Poziom |
+|---|---|
+| mało lawy (poniżej progu z USTAW) | ALARM |
+| mało prądu (poniżej 20%) | ALARM |
+| żółw czeka: brak paliwa / bloków / pochodni | ALARM |
+| żółw przerwał pracę (błąd) | ALARM (do potwierdzenia) |
+| żółw offline, mało paliwa, czujnik offline | uwaga |
+
+- Zakładka **ALM** na monitorze (pierwsza z lewej): lista alarmów, dotknięcie = potwierdzenie, dziennik zdarzeń.
+- **Pocket** (`pscada`, klawisz 4): te same alarmy, potwierdzanie zdalne.
+- **Syrena**: speaker podłączony do komputera SCADA gra, dopóki alarm krytyczny nie zostanie potwierdzony.
+- **Prawdziwy telefon** (opcjonalnie): zainstaluj aplikację **ntfy**, zasubskrybuj swój tajny temat i na komputerze SCADA wpisz `set scada.ntfy <temat>`.

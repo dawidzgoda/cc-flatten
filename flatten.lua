@@ -107,7 +107,9 @@ local function selectFiller()
       if isFiller(s) then turtle.select(s); return end
     end
     print("Brak blokow do zasypywania! Dodaj ziemie/cobble do ekwipunku...")
+    _G.ccWaiting = "brak blokow do zasypywania" -- widoczne na SCADA
     os.pullEvent("turtle_inventory")
+    _G.ccWaiting = nil
   end
 end
 
@@ -131,7 +133,9 @@ local function refuel(needed)
     end
     if not ok then
       print(("Malo paliwa (%d/%d). Dodaj wegiel..."):format(turtle.getFuelLevel(), needed))
+      _G.ccWaiting = "brak paliwa" -- widoczne na SCADA
       os.pullEvent("turtle_inventory")
+      _G.ccWaiting = nil
     end
   end
 end
