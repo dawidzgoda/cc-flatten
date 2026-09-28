@@ -149,6 +149,8 @@ local function histRate(hist, msPerUnit)
   return dt > 0 and (last.v - first.v) / dt or 0
 end
 
+local sampleSeries   -- definicja nizej (potrzebuje progow alarmow)
+
 local function receiveSensor(id, msg)
   local key = tostring(msg.label or ("#" .. id))
   local g = groups[key]
@@ -163,6 +165,7 @@ local function receiveSensor(id, msg)
   g.sum = summarize(g.points)
   g.hist[#g.hist + 1] = { t = now(), v = g.sum.energy, sig = g.sum.energyCap }
   if #g.hist > 24 then table.remove(g.hist, 1) end
+  sampleSeries(key, g)
 end
 
 local function groupNames()
@@ -205,6 +208,89 @@ local function watched(group, prefix)
     if k:sub(1, #prefix) == prefix and tonumber(v) and v > 0 then out[k:sub(#prefix + 1)] = v end
   end
   return out
+end
+
+---------------------------------------------------------------------------
+-- Historia do wykresow
+--
+-- g.series[klucz] (klucze jak w progach: energy, su:<id>, rpm:<id>,
+-- fluid:<nazwa>, item:<nazwa>), wartosci w jednostkach wykresu:
+-- energy/su w %, rpm, plyny w wiadrach, przedmioty w sztukach.
+--   short - ostatnie 10 min (probka co 5 s)
+--   long  - ostatnie 2 h (srednia z kazdej minuty), zapisywana na dysk
+
+local SHORT_MAX, LONG_MAX, LONG_STEP = 120, 120, 60000
+local HIST_FILE = "scada_hist"
+
+-- Historia 2 h wczytana z dysku; trafia do serii przy pierwszych danych grupy
+local savedHist = {}
+if not DEMO and fs.exists(HIST_FILE) then
+  local f = fs.open(HIST_FILE, "r")
+  local data = textutils.unserialize(f.readAll())
+  f.close()
+  if type(data) == "table" then savedHist = data end
+end
+
+local function pushSeries(label, g, key, v)
+  g.series = g.series or {}
+  local s = g.series[key]
+  if not s then
+    local old = savedHist[label] and savedHist[label][key]
+    s = { short = {}, long = type(old) == "table" and old or {}, acc = 0, n = 0, t0 = now() }
+    g.series[key] = s
+  end
+  s.last = v
+  s.short[#s.short + 1] = v
+  if #s.short > SHORT_MAX then table.remove(s.short, 1) end
+  s.acc, s.n = s.acc + v, s.n + 1
+  if now() - s.t0 >= LONG_STEP then
+    s.long[#s.long + 1] = s.acc / s.n
+    if #s.long > LONG_MAX then table.remove(s.long, 1) end
+    s.acc, s.n, s.t0 = 0, 0, now()
+  end
+end
+
+sampleSeries = function(label, g)
+  local s = g.sum
+  if s.energyCap > 0 then pushSeries(label, g, "energy", s.energy / s.energyCap * 100) end
+  for _, st in ipairs(s.stress) do
+    if st.capacity > 0 then pushSeries(label, g, "su:" .. st.id, st.stress / st.capacity * 100) end
+  end
+  for _, sp in ipairs(s.speed) do pushSeries(label, g, "rpm:" .. sp.id, sp.speed) end
+  if s.tanks > 0 then
+    for _, f in ipairs(s.fluidList) do pushSeries(label, g, "fluid:" .. f.name, f.amount / 1000) end
+    for name in pairs(watched(label, "fluid:")) do
+      if not s.fluids[name] then pushSeries(label, g, "fluid:" .. name, 0) end
+    end
+  end
+  if s.itemSources > 0 then
+    -- tylko obserwowane i 15 najliczniejszych (jak na ekranie grupy)
+    local watch = watched(label, "item:")
+    for name in pairs(watch) do pushSeries(label, g, "item:" .. name, s.items[name] or 0) end
+    local n = 0
+    for _, it in ipairs(s.itemList) do
+      if not watch[it.name] then
+        pushSeries(label, g, "item:" .. it.name, it.count)
+        n = n + 1
+        if n >= 15 then break end
+      end
+    end
+  end
+end
+
+local function saveHistory()
+  local data = {}
+  for label, g in pairs(groups) do
+    data[label] = {}
+    for key, s in pairs(g.series or {}) do
+      if #s.long > 0 then data[label][key] = s.long end
+    end
+  end
+  local ok, text = pcall(textutils.serialize, data, { compact = true })
+  if not ok then text = textutils.serialize(data) end
+  local f = fs.open(HIST_FILE, "w")
+  f.write(text)
+  f.close()
 end
 
 ---------------------------------------------------------------------------
@@ -812,20 +898,22 @@ local function groupRows(label)
     local rate = histRate(g.hist, 50)
     sec("PRAD")
     row({ bar = pct / 100, barCol = col })
+    local openEnergy = function() openCfg({ group = label, key = "energy", title = "Prad",
+      desc = "Alarm, gdy naladowanie ponizej", unit = "%", default = 20,
+      big = 10, small = 1, max = 100 }) end
     row({ text = fmtFE(s.energy) .. " / " .. fmtFE(s.energyCap),
           right = (rate > 0 and "+" or "") .. fmtFE(rate) .. "/t",
-          rfg = rate < 0 and colors.red or (rate > 0 and colors.lime or colors.lightGray) })
+          rfg = rate < 0 and colors.red or (rate > 0 and colors.lime or colors.lightGray),
+          action = openEnergy })
     if #s.energySrc > 1 then
       for _, src in ipairs(s.energySrc) do
         row({ text = " " .. shortName(src.id), fg = colors.lightGray,
               right = ("%d%%"):format(math.floor(src.energy / src.capacity * 100)) })
       end
     end
-    row({ text = "Alarm ponizej", fg = colors.lightGray,
+    row({ text = "Wykres i alarm ponizej", fg = colors.lightGray,
           right = min > 0 and (min .. "%") or "wyl.", rfg = colors.lightBlue,
-          action = function() openCfg({ group = label, key = "energy", title = "Prad",
-            desc = "Alarm, gdy naladowanie ponizej", unit = "%", default = 20,
-            big = 10, small = 1, max = 100 }) end })
+          action = openEnergy })
   end
 
   -- KINETYKA (Create)
@@ -936,27 +1024,120 @@ local function drawGroup()
   drawHeader(selGroup, function() view = "plant" end)
   local rows = groupRows(selGroup)
   local overflow = drawRows(rows, 2, h - 1, "group:" .. selGroup)
-  drawFooter("Dotknij pozycji = prog alarmu")
+  drawFooter("Dotknij pozycji = wykres i alarm")
   if overflow then scrollButtons("group:" .. selGroup, h - 2) end
   return true
 end
 
--- Ekran progu alarmu jednej pozycji
+-- Ekran pozycji: wykres historii + prog alarmu
+
+local chartRange = "short"   -- "short" = 10 min, "long" = 2 h
+
+local function seriesFmt(key, v)
+  if key == "energy" or key:sub(1, 3) == "su:" then return ("%d%%"):format(math.floor(v + 0.5)) end
+  if key:sub(1, 4) == "rpm:" then return ("%d RPM"):format(math.floor(v + 0.5)) end
+  if key:sub(1, 6) == "fluid:" then return ("%.1f B"):format(v) end
+  return fmtNum(v)
+end
+
+local function seriesColor(key)
+  if key == "energy" then return colors.yellow end
+  if key:sub(1, 3) == "su:" then return colors.lime end
+  if key:sub(1, 4) == "rpm:" then return colors.lightBlue end
+  if key:sub(1, 6) == "fluid:" then return key:find("lava") and colors.orange or colors.cyan end
+  return colors.magenta
+end
+
+-- Sciska serie do szerokosci wykresu (srednie z kolejnych przedzialow)
+local function resample(data, cw)
+  if #data <= cw then return data end
+  local out, step = {}, #data / cw
+  for i = 1, cw do
+    local a, b = math.floor((i - 1) * step) + 1, math.floor(i * step)
+    local sum = 0
+    for j = a, b do sum = sum + data[j] end
+    out[i] = sum / (b - a + 1)
+  end
+  return out
+end
+
+-- Wykres slupkowy; prog rysowany czerwona linia. Zwraca skale (maks.).
+local function drawChart(x0, y0, cw, ch, data, thr, isMax, col)
+  data = resample(data, cw)
+  local n = #data
+  local maxV = (thr and thr > 0) and thr or 0
+  for i = 1, n do maxV = math.max(maxV, data[i]) end
+  if maxV <= 0 then maxV = 1 end
+  maxV = maxV * 1.1
+
+  local heights = {}
+  for i = 1, n do
+    local v = data[i]
+    local x = x0 + cw - n + i - 1
+    local bad = thr and thr > 0 and ((isMax and v >= thr) or (not isMax and v < thr))
+    local bh = math.floor(clamp(v / maxV, 0, 1) * ch + 0.5)
+    heights[x] = bh
+    for r = 0, bh - 1 do put(x, y0 + ch - 1 - r, " ", nil, bad and colors.red or col) end
+  end
+
+  if thr and thr > 0 then
+    local rThr = math.floor(clamp(thr / maxV, 0, 1) * ch + 0.5)
+    local ty = clamp(y0 + ch - rThr, y0, y0 + ch - 1)
+    for x = x0, x0 + cw - 1 do
+      local bh = heights[x] or 0
+      if ty < y0 + ch - bh then put(x, ty, "-", colors.red, colors.black) end
+    end
+  end
+  return maxV / 1.1
+end
+
 local function drawPointCfg()
   local t = cfgTarget
-  drawHeader("Alarm: " .. t.title, function() view = "group" end)
+  local g = groups[t.group]
+  local series = g and g.series and g.series[t.key]
+  local thr = getCfg(t.group, t.key, t.default)
+  local isMax = t.key:sub(1, 3) == "su:"
+  local col = seriesColor(t.key)
 
-  local value = getCfg(t.group, t.key, t.default)
-  put(2, 3, "Grupa: " .. t.group, colors.lightGray, colors.black)
-  put(2, 5, t.desc, colors.white, colors.black)
-  numberRow(7, t.unit, value, function(v) setCfg(t.group, t.key, clamp(v, 0, t.max)) end, t.big, t.small)
-  put(2, 9, value > 0 and "Alarm wlaczony" or "Alarm wylaczony (0)",
-      value > 0 and colors.lime or colors.gray, colors.black)
+  drawHeader(t.title .. " - " .. t.group, function() view = "group" end)
 
-  button(2, 11, " WYLACZ ", colors.gray, function() setCfg(t.group, t.key, 0) end)
-  button(11, 11, " DOMYSLNE ", colors.gray, function() setCfg(t.group, t.key, nil) end)
+  -- Wartosc biezaca i przelacznik zakresu
+  if series and series.last then
+    local v = series.last
+    local bad = thr > 0 and ((isMax and v >= thr) or (not isMax and v < thr))
+    put(2, 2, "Teraz: " .. seriesFmt(t.key, v), bad and colors.red or col, colors.black)
+  end
+  toggle(w - 15, 2, " 10 MIN ", chartRange == "short", function() chartRange = "short" end)
+  toggle(w - 6, 2, " 2 H ", chartRange == "long", function() chartRange = "long" end)
 
-  drawFooter("Zmiany zapisuja sie od razu")
+  -- Wykres
+  local top, bottom = 4, h - 7
+  local data = series and (chartRange == "short" and series.short or series.long) or {}
+  if #data < 2 then
+    put(2, top + 1, chartRange == "short" and "Zbieram dane... (probka co 5 s)"
+                                          or "Zbieram dane... (probka co minute)",
+        colors.lightGray, colors.black)
+  else
+    local maxV = drawChart(2, top, w - 2, bottom - top + 1, data, thr, isMax, col)
+    put(2, 3, "maks " .. seriesFmt(t.key, maxV), colors.lightGray, colors.black)
+    if thr > 0 then
+      local tt = (isMax and "prog od " or "prog < ") .. seriesFmt(t.key, thr)
+      put(w - #tt, 3, tt, colors.red, colors.black)
+    end
+    local span = chartRange == "short" and (#data * REFRESH / 60) or #data
+    local left = span >= 60 and ("-%.1f h"):format(span / 60) or ("-%d min"):format(math.max(1, math.floor(span + 0.5)))
+    put(2, bottom + 1, left, colors.gray, colors.black)
+    put(w - 5, bottom + 1, "teraz", colors.gray, colors.black)
+  end
+
+  -- Prog alarmu
+  put(2, h - 5, fit(t.desc .. (thr > 0 and "" or " (wyl.)"), w - 2),
+      thr > 0 and colors.white or colors.gray, colors.black)
+  numberRow(h - 4, t.unit, thr, function(v) setCfg(t.group, t.key, clamp(v, 0, t.max)) end, t.big, t.small)
+  button(2, h - 3, " WYLACZ ", colors.gray, function() setCfg(t.group, t.key, 0) end)
+  button(11, h - 3, " DOMYSLNE ", colors.gray, function() setCfg(t.group, t.key, nil) end)
+
+  drawFooter("Prog zapisuje sie od razu")
 end
 
 ---------------------------------------------------------------------------
@@ -1131,6 +1312,7 @@ local function receiver()
 end
 
 -- Co REFRESH sekund odpytuje zolwie, liczy alarmy i odswieza ekran
+local lastHistSave = now()
 local function pinger()
   while true do
     if DEMO then
@@ -1141,6 +1323,11 @@ local function pinger()
     end
     evalAlarms()
     draw()
+    -- historia 2 h na dysk co 5 minut (przetrwa restart i UPDATE)
+    if not DEMO and now() - lastHistSave > 300000 then
+      lastHistSave = now()
+      pcall(saveHistory)
+    end
     sleep(DEMO and REFRESH or (REFRESH - 1.5))
   end
 end
@@ -1167,6 +1354,7 @@ local function runUpdate()
     draw()
     return
   end
+  pcall(saveHistory)
   term.setCursorPos(1, TERM_ROW + 1)
   shell.run("update")
   os.reboot()
