@@ -222,6 +222,7 @@ for row = 1, WIDTH do
     processCell()
     if col < LENGTH then forward() end
   end
+  _G.ccProgress = row / WIDTH -- postep dla listenera / SCADA
   if row < WIDTH then
     if row % 2 == 1 then
       turnRight(); forward(); turnRight()

@@ -187,9 +187,10 @@ end
 refuel(pathLen + 10)
 up()
 
-for _, s in ipairs(spots) do
+for i, s in ipairs(spots) do
   goTo(s[1], s[2])
   placeTorch()
+  _G.ccProgress = i / #spots -- postep dla listenera / SCADA
 end
 
 goTo(0, 0)

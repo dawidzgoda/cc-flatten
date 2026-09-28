@@ -1,6 +1,7 @@
 -- update.lua - pobiera najnowsze wersje programow z GitHuba
 -- Na zolwiu: flatten, torches, startup (listener), update
--- Na pocket computerze / komputerze: remote, update
+-- Na pocket computerze: remote, update
+-- Na zwyklym komputerze: scada, remote, update
 
 local BASE = "https://raw.githubusercontent.com/dawidzgoda/cc-flatten/main/"
 
@@ -12,8 +13,15 @@ if turtle then
     { "listener.lua", "startup" },
     { "update.lua",   "update" },
   }
-else
+elseif pocket then
   files = {
+    { "remote.lua", "remote" },
+    { "update.lua", "update" },
+  }
+else
+  -- zwykly komputer: panel SCADA + pilot
+  files = {
+    { "scada.lua",  "scada" },
     { "remote.lua", "remote" },
     { "update.lua", "update" },
   }
@@ -21,7 +29,9 @@ end
 
 if not http then error("HTTP jest wylaczone w configu CC: Tweaked") end
 
-print(turtle and "Aktualizuje zolwia..." or "Aktualizuje pilota...")
+print(turtle and "Aktualizuje zolwia..."
+  or pocket and "Aktualizuje pilota..."
+  or "Aktualizuje komputer...")
 local allOk = true
 for _, f in ipairs(files) do
   local src, dst = f[1], f[2]
