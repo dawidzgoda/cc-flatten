@@ -8,7 +8,7 @@ Programy dla CC: Tweaked (Minecraft) do wyrównywania terenu i stawiania pochodn
 | `torches.lua` | żółw (zapisz jako `torches`) | stawia pochodnie w siatce co N kratek |
 | `listener.lua` | żółw (zapisz jako `startup`) | czeka na polecenia z pilota przez rednet |
 | `remote.lua` | pocket computer (zapisz jako `remote`) | pilot: wybór ID żółwia, wymiary, start zdalny |
-| `scada.lua` | komputer z advanced monitorem (zapisz jako `scada`) | panel stanu żółwi + dotykowe uruchamianie programów z parametrami; `scada demo` = dane testowe |
+| `scada.lua` | komputer z advanced monitorem (zapisz jako `scada`) | panel stanu żółwi + dotykowe uruchamianie programów; zakładka LAWA (zapas ze zbiorników i skrzyń, trend, wykres); `scada demo` = dane testowe |
 | `update.lua` | wszędzie (zapisz jako `update`) | pobiera najnowsze wersje odpowiednich plików |
 
 ## Instalacja

@@ -7,13 +7,22 @@
 --         + wireless/ender modem.
 --
 -- Obsluga (dotyk):
+--   * zakladki w naglowku: ZOLWIE / LAWA,
 --   * lista zolwi -> dotknij zolwia, zeby go skonfigurowac,
---   * ekran konfiguracji -> wybierz program i parametry, dotknij START.
+--   * ekran konfiguracji -> wybierz program i parametry, dotknij START,
+--   * LAWA -> zapas lawy ze zbiornikow i skrzyn z wiadrami podlaczonych
+--     do komputera (bezposrednio albo wired modemem + kablem).
 
 local PROTOCOL = "flatten"
 local REFRESH  = 5      -- sekundy miedzy odpytaniami
 local OFFLINE  = 15     -- po tylu sekundach bez odpowiedzi zolw jest OFFLINE
 local LOW_FUEL = 500
+
+local LAVA        = "minecraft:lava"
+local LAVA_BUCKET = "minecraft:lava_bucket"
+local LAVA_MAX    = 64000   -- mB: pelny pasek (np. 4 zbiorniki po 16 wiader)
+local LAVA_LOW    = 8000    -- mB: ponizej tego alarm (czerwona zakladka)
+local HISTORY_MAX = 120     -- probek historii (120 x 5 s = 10 min)
 
 local DEMO = ({ ... })[1] == "demo"
 
@@ -83,6 +92,86 @@ local function tickDemo()
 end
 
 ---------------------------------------------------------------------------
+-- Lawa: zbiorniki (tanks) i skrzynie z wiadrami (list)
+
+local lava = { total = 0, sources = {}, history = {} }  -- history: { t, mB }
+
+local function scanLava()
+  local total, sources = 0, {}
+  for _, name in ipairs(peripheral.getNames()) do
+    local p = peripheral.wrap(name)
+    local amount, show = 0, false
+
+    if p.tanks then
+      local ok, tanks = pcall(p.tanks)
+      if ok and type(tanks) == "table" then
+        local other = false
+        for _, t in pairs(tanks) do
+          if t.name == LAVA then amount = amount + t.amount
+          elseif t.amount and t.amount > 0 then other = true end
+        end
+        -- pokaz zbiornik z lawa albo pusty (zbiornik z woda pomijamy)
+        show = amount > 0 or not other
+      end
+    end
+
+    if p.list then
+      local ok, items = pcall(p.list)
+      if ok and type(items) == "table" then
+        for _, it in pairs(items) do
+          if it.name == LAVA_BUCKET then
+            amount = amount + it.count * 1000
+            show = true
+          end
+        end
+      end
+    end
+
+    if show then
+      sources[#sources + 1] = { name = name, amount = amount }
+      total = total + amount
+    end
+  end
+  table.sort(sources, function(a, b) return a.amount > b.amount end)
+  return total, sources
+end
+
+local function scanLavaDemo()
+  local t = os.clock()
+  local a = math.floor(24000 + 14000 * math.sin(t / 20))
+  local b = math.floor(9000 + 6000 * math.cos(t / 13))
+  return a + b + 5000, {
+    { name = "create:fluid_tank_0", amount = a },
+    { name = "create:fluid_tank_1", amount = b },
+    { name = "minecraft:chest_2",   amount = 5000 },
+  }
+end
+
+local function sampleLava()
+  lava.total, lava.sources = (DEMO and scanLavaDemo or scanLava)()
+  local hist = lava.history
+  hist[#hist + 1] = { t = now(), v = lava.total }
+  if #hist > HISTORY_MAX then table.remove(hist, 1) end
+end
+
+-- Zmiana zapasu w mB/min liczona z ostatniej minuty historii
+local function lavaRate()
+  local hist = lava.history
+  if #hist < 2 then return 0 end
+  local last = hist[#hist]
+  local first = hist[1]
+  for i = #hist - 1, 1, -1 do
+    first = hist[i]
+    if last.t - hist[i].t >= 60000 then break end
+  end
+  local dt = (last.t - first.t) / 60000
+  if dt <= 0 then return 0 end
+  return (last.v - first.v) / dt
+end
+
+local function buckets(mB) return ("%.1f B"):format(mB / 1000) end
+
+---------------------------------------------------------------------------
 -- Rysowanie
 
 local w, h
@@ -138,12 +227,30 @@ local function drawHeader(title)
   put(w - #clock, 1, clock, colors.white, colors.blue)
 end
 
-local function drawFooter(default)
+-- Naglowek z zakladkami ZOLWIE / LAWA
+local function drawTabs()
+  fillRow(1, colors.blue)
+  put(1, 1, " SCADA ", colors.white, colors.blue)
+
+  local function tab(x, label, name, alarm)
+    local active = (view == name)
+    local bg = active and colors.lightBlue or (alarm and colors.red or colors.gray)
+    button(x, 1, label, bg, function() view = name end, active and colors.black or colors.white)
+  end
+  tab(9, " ZOLWIE ", "list")
+  tab(18, " LAWA ", "lava", #lava.history > 0 and lava.total < LAVA_LOW)
+
+  if DEMO then put(25, 1, "[DEMO]", colors.yellow, colors.blue) end
+  local clock = textutils.formatTime(os.time(), true)
+  put(w - #clock, 1, clock, colors.white, colors.blue)
+end
+
+local function drawFooter(default, color)
   fillRow(h, colors.gray)
   if message and now() - message.time < 10000 then
     put(2, h, fit(message.text, w - 2), message.color, colors.gray)
   else
-    put(2, h, fit(default, w - 2), colors.white, colors.gray)
+    put(2, h, fit(default, w - 2), color or colors.white, colors.gray)
   end
 end
 
@@ -151,7 +258,7 @@ end
 local COL_ID, COL_STATE, COL_PROG, COL_BAR = 1, 6, 14, 23
 
 local function drawList()
-  drawHeader(DEMO and "SCADA - zolwie [DEMO]" or "SCADA - zolwie")
+  drawTabs()
 
   fillRow(2, colors.gray)
   put(COL_ID, 2, "ID", colors.lightGray, colors.gray)
@@ -267,6 +374,71 @@ local function drawConfig()
   drawFooter(p.center and "Zolw stoi na srodku obszaru" or "Zolw stoi w rogu, obszar w prawo")
 end
 
+local function drawLava()
+  drawTabs()
+  local total = lava.total
+  local low = #lava.history > 0 and total < LAVA_LOW
+
+  -- Podsumowanie i trend
+  put(2, 3, "Zapas:", colors.lightGray, colors.black)
+  put(9, 3, ("%s / %s"):format(buckets(total), buckets(LAVA_MAX)),
+      low and colors.red or colors.orange, colors.black)
+  local rate = lavaRate()
+  local rateTxt = ("%+.1f B/min"):format(rate / 1000)
+  local rateCol = rate < 0 and colors.red or (rate > 0 and colors.lime or colors.lightGray)
+  put(w - #rateTxt, 3, rateTxt, rateCol, colors.black)
+
+  -- Pasek wypelnienia
+  local barW = w - 2
+  local filled = math.floor(barW * clamp(total / LAVA_MAX, 0, 1) + 0.5)
+  put(2, 4, (" "):rep(filled), nil, low and colors.red or colors.orange)
+  put(2 + filled, 4, (" "):rep(barW - filled), nil, colors.gray)
+
+  -- Zrodla (max 4 wiersze)
+  fillRow(6, colors.gray)
+  put(2, 6, "ZRODLO", colors.lightGray, colors.gray)
+  put(w - 6, 6, "ZAPAS", colors.lightGray, colors.gray)
+  local y = 7
+  for i, s in ipairs(lava.sources) do
+    if i > 4 then
+      put(2, y, ("... i %d wiecej"):format(#lava.sources - 4), colors.lightGray, colors.black)
+      y = y + 1
+      break
+    end
+    put(2, y, fit(s.name, w - 14), colors.white, colors.black)
+    put(w - 10, y, ("%10s"):format(buckets(s.amount)), colors.orange, colors.black)
+    y = y + 1
+  end
+  if #lava.sources == 0 then
+    put(2, y, "Brak zbiornikow/skrzyn z lawa", colors.red, colors.black)
+    y = y + 1
+  end
+
+  -- Wykres historii (ostatnie probki, prawa strona = teraz)
+  local gTop, gBot = y + 2, h - 1
+  if gBot - gTop >= 1 then
+    put(2, gTop - 1, ("Historia (%d min)"):format(math.floor(HISTORY_MAX * REFRESH / 60)),
+        colors.lightGray, colors.black)
+    local gh, gw = gBot - gTop + 1, w - 2
+    local hist = lava.history
+    local maxV = LAVA_MAX
+    for _, s in ipairs(hist) do maxV = math.max(maxV, s.v) end
+    local start = math.max(1, #hist - gw + 1)
+    for i = start, #hist do
+      local x = 2 + gw - 1 - (#hist - i)
+      local bh = math.floor(gh * hist[i].v / maxV + 0.5)
+      local col = hist[i].v < LAVA_LOW and colors.red or colors.orange
+      for r = 0, bh - 1 do put(x, gBot - r, " ", nil, col) end
+    end
+  end
+
+  if low then
+    drawFooter(("ALARM: malo lawy (< %s)"):format(buckets(LAVA_LOW)), colors.red)
+  else
+    drawFooter(("Zrodel: %d | probka co %d s"):format(#lava.sources, REFRESH))
+  end
+end
+
 local function draw()
   w, h = mon.getSize()
   buttons = {}
@@ -279,7 +451,9 @@ local function draw()
     return
   end
 
-  if view == "config" and selected then drawConfig() else drawList() end
+  if view == "config" and selected then drawConfig()
+  elseif view == "lava" then drawLava()
+  else drawList() end
 end
 
 ---------------------------------------------------------------------------
@@ -312,6 +486,7 @@ end
 -- Co REFRESH sekund odpytuje zolwie i odswieza ekran
 local function pinger()
   while true do
+    sampleLava()
     if DEMO then
       tickDemo()
       draw()
