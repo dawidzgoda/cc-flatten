@@ -108,9 +108,26 @@ local function summarize(points)
   return s
 end
 
+-- Kilka czujnikow z ta sama etykieta = jedna grupa (jak na duzej SCADA)
 local function receiveSensor(id, msg)
   local key = tostring(msg.label or ("#" .. id))
-  groups[key] = { last = now(), sum = summarize(msg.points) }
+  for label, og in pairs(groups) do
+    if label ~= key and og.members[id] then
+      og.members[id] = nil
+      if next(og.members) == nil then groups[label] = nil end
+    end
+  end
+  local g = groups[key] or { members = {} }
+  groups[key] = g
+  g.members[id] = { last = now(), points = type(msg.points) == "table" and msg.points or {} }
+  g.last = now()
+  local all = {}
+  for _, m in pairs(g.members) do
+    if isOnline(m) then
+      for _, pt in ipairs(m.points) do all[#all + 1] = pt end
+    end
+  end
+  g.sum = summarize(all)
 end
 
 local function demoTick()

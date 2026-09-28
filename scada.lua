@@ -36,7 +36,18 @@ end
 local mon = peripheral.find("monitor")
 if not mon then error("Brak monitora!") end
 if not mon.isColor() then error("Potrzebny ADVANCED monitor (kolorowy)") end
-mon.setTextScale(0.5)
+-- Wielkosc tekstu: najwieksza, przy ktorej ekran ma min. 39x18 znakow.
+-- Recznie:  set scada.scale 1   (0.5 - 5, co 0.5)
+local function pickScale()
+  local forced = tonumber(settings.get("scada.scale"))
+  if forced then mon.setTextScale(forced); return end
+  for _, s in ipairs({ 3, 2.5, 2, 1.5, 1, 0.5 }) do
+    mon.setTextScale(s)
+    local mw, mh = mon.getSize()
+    if mw >= 39 and mh >= 18 then return end
+  end
+end
+pickScale()
 
 if not DEMO then
   local modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
@@ -95,9 +106,12 @@ end
 ---------------------------------------------------------------------------
 -- ZAKLAD: grupy z czujnikow
 --
--- groups[nazwa] = { label, id, last, points, sum, hist }
---   sum  - podsumowanie punktow (patrz summarize)
---   hist - historia energii { t, v, sig } do bilansu FE/t
+-- groups[nazwa] = { label, last, members, points, sum, hist }
+--   members - czujniki z ta etykieta: id -> { last, points }; kilka
+--             komputerow z ta sama nazwa tworzy JEDNA grupe
+--   points  - polaczone punkty aktywnych czujnikow grupy
+--   sum     - podsumowanie punktow (patrz summarize)
+--   hist    - historia energii { t, v, sig } do bilansu FE/t
 
 local groups = {}
 
@@ -123,7 +137,9 @@ local function summarize(points)
         s.fluids[f.name] = e
       end
     elseif pt.kind == "items" then
-      s.items, s.itemSources = pt.items or {}, pt.sources or 0
+      -- kilka czujnikow w grupie -> sumujemy magazyny
+      for name, count in pairs(pt.items or {}) do s.items[name] = (s.items[name] or 0) + count end
+      s.itemSources = s.itemSources + (pt.sources or 0)
     elseif pt.kind == "station" then s.stations[#s.stations + 1] = pt
     elseif pt.kind == "signal" then s.signals[#s.signals + 1] = pt
     end
@@ -151,21 +167,55 @@ end
 
 local sampleSeries   -- definicja nizej (potrzebuje progow alarmow)
 
+-- Laczy punkty aktywnych czujnikow grupy. Przy kilku czujnikach nazwy
+-- urzadzen dostaja prefiks "#id/" (kazdy komputer numeruje od 0).
+local function mergeMembers(g)
+  local active = {}
+  for mid, m in pairs(g.members) do
+    if isOnline(m) then active[#active + 1] = mid end
+  end
+  table.sort(active)
+  local multi = #active > 1
+  local all = {}
+  for _, mid in ipairs(active) do
+    for _, pt in ipairs(g.members[mid].points) do
+      if multi then
+        local copy = {}
+        for k, v in pairs(pt) do copy[k] = v end
+        copy.id = "#" .. mid .. "/" .. tostring(pt.id)
+        pt = copy
+      end
+      all[#all + 1] = pt
+    end
+  end
+  g.points = all
+  g.sum = summarize(all)
+end
+
 local function receiveSensor(id, msg)
   local key = tostring(msg.label or ("#" .. id))
   local g = groups[key]
-  -- dwa rozne czujniki z ta sama etykieta - rozrozniamy po ID
-  if g and g.id ~= id and isOnline(g) then key = key .. " #" .. id; g = groups[key] end
   if not g then
-    g = { label = key, hist = {} }
+    g = { label = key, hist = {}, members = {} }
     groups[key] = g
   end
-  g.id, g.last = id, now()
-  g.points = type(msg.points) == "table" and msg.points or {}
-  g.sum = summarize(g.points)
-  g.hist[#g.hist + 1] = { t = now(), v = g.sum.energy, sig = g.sum.energyCap }
-  if #g.hist > 24 then table.remove(g.hist, 1) end
-  sampleSeries(key, g)
+  -- czujnik mogl zmienic nazwe - usun go ze starej grupy
+  for label, og in pairs(groups) do
+    if label ~= key and og.members[id] then
+      og.members[id] = nil
+      if next(og.members) == nil then groups[label] = nil else mergeMembers(og) end
+    end
+  end
+  g.members[id] = { last = now(), points = type(msg.points) == "table" and msg.points or {} }
+  g.last = now()
+  mergeMembers(g)
+  -- historia raz na cykl, nawet gdy grupa ma kilka czujnikow
+  if not g.lastSample or now() - g.lastSample >= REFRESH * 1000 - 1000 then
+    g.lastSample = now()
+    g.hist[#g.hist + 1] = { t = now(), v = g.sum.energy, sig = g.sum.energyCap }
+    if #g.hist > 24 then table.remove(g.hist, 1) end
+    sampleSeries(key, g)
+  end
 end
 
 local function groupNames()
@@ -372,7 +422,13 @@ local function tickDemo()
   if not groups["Magazyn Stary"] then
     receiveSensor(9003, { label = "Magazyn Stary", points = {} })
     groups["Magazyn Stary"].last = now() - 60000
+    groups["Magazyn Stary"].members[9003].last = now() - 60000
   end
+end
+
+-- Czujnik, ktory przestal nadawac, wypada z polaczonych danych grupy
+local function refreshGroups()
+  for _, g in pairs(groups) do mergeMembers(g) end
 end
 
 ---------------------------------------------------------------------------
@@ -426,9 +482,13 @@ local function alarmConditions()
 
   for label, g in pairs(groups) do
     local tag, s = "[" .. label .. "] ", g.sum
-    if not isOnline(g) then
-      add("g_off_" .. label, tag .. "czujnik offline", false, label)
-    else
+    -- kazdy czujnik grupy osobno (grupa moze miec kilka komputerow)
+    for mid, m in pairs(g.members) do
+      if not isOnline(m) then
+        add("g_off_" .. label .. "#" .. mid, tag .. "czujnik #" .. mid .. " offline", false, label)
+      end
+    end
+    if isOnline(g) then
       if s.energyCap > 0 then
         local pct, min = s.energy / s.energyCap * 100, getCfg(label, "energy", 20)
         if min > 0 and pct < min then
@@ -877,10 +937,19 @@ local function groupSummary(g)
   if s.fluidList[1] then
     parts[#parts + 1] = shortName(s.fluidList[1].name) .. " " .. fmtNum(s.fluidList[1].amount / 1000) .. "B"
   end
+  if s.tanks > 0 and not s.fluidList[1] then parts[#parts + 1] = s.tanks .. " zb. pustych" end
+  if #s.speed > 0 then parts[#parts + 1] = ("%d RPM"):format(s.speed[1].speed) end
   if s.itemSources > 0 then parts[#parts + 1] = #s.itemList .. " poz." end
   if #s.stations > 0 then parts[#parts + 1] = #s.stations .. " stacji" end
-  if #parts == 0 then return "brak danych" end
-  return table.concat(parts, " | ")
+  if #s.signals > 0 then parts[#parts + 1] = #s.signals .. " sygn." end
+  if #parts == 0 then
+    -- stressometr bez sieci (pojemnosc 0) tez tu trafia
+    if #s.stress > 0 then return "SU: siec stoi (0 SU)" end
+    return "nic nie wykryto - na czujniku: sensor test"
+  end
+  local n = 0
+  for _ in pairs(g.members) do n = n + 1 end
+  return (n > 1 and (n .. " czujn. | ") or "") .. table.concat(parts, " | ")
 end
 
 local function drawPlant()
@@ -944,10 +1013,25 @@ local function groupRows(label)
   local function sec(t) rows[#rows + 1] = { text = t, fg = colors.black, bg = colors.lightGray } end
   local function row(r) rows[#rows + 1] = r end
 
-  if not isOnline(g) then
-    row({ text = ("Czujnik OFFLINE od %s"):format(hhmm(g.last)), fg = colors.red })
-    row({ text = " USUN GRUPE Z LISTY ", fg = colors.white, bg = colors.red,
-          action = function() groups[label] = nil; view = "plant" end })
+  -- czujniki grupy; nieaktywny mozna usunac dotykiem
+  local ids = {}
+  for mid in pairs(g.members) do ids[#ids + 1] = mid end
+  table.sort(ids)
+  if #ids > 1 or not isOnline(g) then
+    sec(("CZUJNIKI (%d)"):format(#ids))
+    for _, mid in ipairs(ids) do
+      local m = g.members[mid]
+      if isOnline(m) then
+        row({ text = ("#%d"):format(mid), right = ("OK, %d pkt."):format(#m.points), rfg = colors.lime })
+      else
+        row({ text = ("#%d offline od %s - dotknij = usun"):format(mid, hhmm(m.last)), fg = colors.red,
+              action = function()
+                g.members[mid] = nil
+                if next(g.members) == nil then groups[label] = nil; view = "plant"
+                else mergeMembers(g) end
+              end })
+      end
+    end
   end
 
   -- PRAD
@@ -1382,6 +1466,7 @@ local function pinger()
       rednet.broadcast({ cmd = "ping" }, PROTOCOL)
       sleep(1.5) -- czas na odpowiedzi
     end
+    refreshGroups()
     evalAlarms()
     draw()
     -- zapis na dysk (przetrwa restart i UPDATE):
@@ -1443,6 +1528,7 @@ local function ui()
         runUpdate()
       end
     elseif ev == "monitor_resize" then
+      pickScale()   -- monitor rozbudowany/zmniejszony - dobierz tekst od nowa
       draw()
     end
   end
