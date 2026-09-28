@@ -2,7 +2,7 @@
 -- komputerze i wysyla dane bezprzewodowo do SCADA.
 --
 -- Uzycie:  lavasensor           - uruchom czujnik
---          lavasensor install   - uruchamiaj automatycznie po starcie komputera
+--          lavasensor install   - autostart (dziala tez razem z energysensor)
 --
 -- Wymaga: komputer + wireless/ender modem, zbiorniki lub skrzynie z wiadrami
 --         lawy obok komputera albo podlaczone wired modemem + kablem.
@@ -14,14 +14,38 @@ local INTERVAL      = 5  -- sekundy miedzy wysylkami
 local LAVA        = "minecraft:lava"
 local LAVA_BUCKET = "minecraft:lava_bucket"
 
-if ({ ... })[1] == "install" then
+local SENSORS    = { "lavasensor", "energysensor" }
+local STATUS_ROW = 1   -- wiersze 1-4 ekranu (energysensor ma 6-9)
+
+-- Autostart: startup.lua uruchamia rownolegle wszystkie zainstalowane czujniki
+local function install(me)
+  local list, content = {}, ""
+  if fs.exists("startup.lua") then
+    local f = fs.open("startup.lua", "r"); content = f.readAll(); f.close()
+  end
+  for _, n in ipairs(SENSORS) do
+    if n == me or content:find(n, 1, true) then list[#list + 1] = n end
+  end
+  if content ~= "" and not content:find("^%-%- sensors:") then
+    fs.delete("startup.bak"); fs.copy("startup.lua", "startup.bak")
+    print("Stary startup.lua zapisano jako startup.bak")
+  end
+
+  local names = table.concat(list, ",")
   local f = fs.open("startup.lua", "w")
-  f.write('shell.run("lavasensor")\n')
+  f.writeLine("-- sensors: " .. names)
+  f.writeLine("term.clear()")
+  f.writeLine("local fns = {}")
+  f.writeLine(('for n in ("%s"):gmatch("[^,]+") do'):format(names))
+  f.writeLine("  fns[#fns + 1] = function() shell.run(n) end")
+  f.writeLine("end")
+  f.writeLine("parallel.waitForAll(table.unpack(fns))")
   f.close()
-  print("Zapisano startup.lua - czujnik ruszy po kazdym starcie.")
-  print("Wpisz 'reboot' albo 'lavasensor', zeby uruchomic teraz.")
-  return
+  print("Autostart: " .. names)
+  print("Wpisz 'reboot', zeby uruchomic.")
 end
+
+if ({ ... })[1] == "install" then install("lavasensor"); return end
 
 local modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
 if not modem then error("Brak wireless/ender modemu!") end
@@ -68,10 +92,12 @@ end
 
 local label = os.getComputerLabel() or ("czujnik_" .. os.getComputerID())
 
-term.clear(); term.setCursorPos(1, 1)
-print(("Czujnik lawy '%s' (#%d)"):format(label, os.getComputerID()))
-print("Wysylam dane do SCADA co " .. INTERVAL .. " s. Ctrl+T - stop.")
-print()
+local function line(row, text)
+  term.setCursorPos(1, row); term.clearLine(); term.write(text)
+end
+
+line(STATUS_ROW, ("Czujnik lawy '%s' (#%d)"):format(label, os.getComputerID()))
+line(STATUS_ROW + 1, "Wysylam dane do SCADA co " .. INTERVAL .. " s.")
 
 while true do
   local total, sources = scanLava()
@@ -79,11 +105,8 @@ while true do
     cmd = "lava", label = label, total = total, sources = sources,
   }, LAVA_PROTOCOL)
 
-  local _, y = term.getCursorPos()
-  term.setCursorPos(1, 4); term.clearLine()
-  write(("[%s] Zrodel: %d, lawa: %.1f B"):format(
+  line(STATUS_ROW + 2, ("[%s] Zrodel: %d, lawa: %.1f B"):format(
     textutils.formatTime(os.time(), true), #sources, total / 1000))
-  term.setCursorPos(1, y)
 
   sleep(INTERVAL)
 end

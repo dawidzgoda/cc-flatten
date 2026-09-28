@@ -7,7 +7,8 @@
 --         + wireless/ender modem.
 --
 -- Obsluga (dotyk):
---   * zakladki w naglowku: ZOLWIE / LAWA,
+--   * zakladki w naglowku: ZOLWIE / LAWA / PRAD,
+--   * PRAD -> magazyny FE (np. Powah) lokalnie i z czujnikow energysensor,
 --   * lista zolwi -> dotknij zolwia, zeby go skonfigurowac,
 --   * ekran konfiguracji -> wybierz program i parametry, dotknij START,
 --   * LAWA -> zapas lawy ze zbiornikow i skrzyn z wiadrami podlaczonych
@@ -15,6 +16,8 @@
 
 local PROTOCOL      = "flatten"
 local LAVA_PROTOCOL = "scada_lava"   -- dane z czujnikow lavasensor
+local ENERGY_PROTOCOL = "scada_energy" -- dane z czujnikow energysensor
+local ENERGY_LOW_PCT  = 20           -- % naladowania: ponizej alarm
 local REFRESH  = 5      -- sekundy miedzy odpytaniami
 local OFFLINE  = 15     -- po tylu sekundach bez odpowiedzi zolw jest OFFLINE
 local LOW_FUEL = 500
@@ -204,6 +207,92 @@ end
 local function buckets(mB) return ("%.1f B"):format(mB / 1000) end
 
 ---------------------------------------------------------------------------
+-- Prad (FE): magazyny energy_storage (np. Powah) lokalnie + czujniki zdalne
+
+local energy = { total = 0, capacity = 0, sources = {}, history = {} }
+local remoteEnergy = {}   -- id -> { label, energy, capacity, sources, last }
+
+local function scanEnergy()
+  local total, capacity, sources = 0, 0, {}
+  for _, name in ipairs(peripheral.getNames()) do
+    local p = peripheral.wrap(name)
+    if p.getEnergy and p.getEnergyCapacity then
+      local ok1, e = pcall(p.getEnergy)
+      local ok2, c = pcall(p.getEnergyCapacity)
+      if ok1 and ok2 and tonumber(e) and tonumber(c) and c > 0 then
+        sources[#sources + 1] = { name = name, energy = e, capacity = c }
+        total, capacity = total + e, capacity + c
+      end
+    end
+  end
+  return total, capacity, sources
+end
+
+local function scanEnergyDemo()
+  local t = os.clock()
+  local a = math.floor(30e6 + 25e6 * math.sin(t / 25))
+  local b = math.floor(4e6 + 3e6 * math.cos(t / 11))
+  return a + b, 60e6 + 10e6, {
+    { name = "powah:energy_cell_0", energy = a, capacity = 60e6 },
+    { name = "powah:energy_cell_1", energy = b, capacity = 10e6 },
+  }
+end
+
+local function sampleEnergy()
+  local total, capacity, sources = (DEMO and scanEnergyDemo or scanEnergy)()
+
+  for id, r in pairs(remoteEnergy) do
+    local prefix = (r.label or ("#" .. id)) .. "/"
+    if isOnline(r) then
+      for _, s in ipairs(r.sources) do
+        sources[#sources + 1] = {
+          name = prefix .. shortName(s.name), energy = s.energy, capacity = s.capacity,
+        }
+      end
+      total, capacity = total + r.energy, capacity + r.capacity
+    else
+      sources[#sources + 1] = { name = prefix .. "OFFLINE", energy = 0, capacity = 0, offline = true }
+    end
+  end
+  table.sort(sources, function(a, b) return a.energy > b.energy end)
+
+  energy.total, energy.capacity, energy.sources = total, capacity, sources
+  local hist = energy.history
+  hist[#hist + 1] = { t = now(), v = total }
+  if #hist > HISTORY_MAX then table.remove(hist, 1) end
+end
+
+-- Bilans w FE/t (1 s = 20 tickow) z ostatniej minuty historii
+local function energyRate()
+  local hist = energy.history
+  if #hist < 2 then return 0 end
+  local last, first = hist[#hist], hist[1]
+  for i = #hist - 1, 1, -1 do
+    first = hist[i]
+    if last.t - hist[i].t >= 60000 then break end
+  end
+  local ticks = (last.t - first.t) / 50
+  if ticks <= 0 then return 0 end
+  return (last.v - first.v) / ticks
+end
+
+local function energyPct()
+  if energy.capacity <= 0 then return 0 end
+  return energy.total / energy.capacity * 100
+end
+
+local function energyLow()
+  return #energy.history > 0 and energy.capacity > 0 and energyPct() < ENERGY_LOW_PCT
+end
+
+local function fmtFE(n)
+  local units = { "", "k", "M", "G", "T" }
+  local i = 1
+  while math.abs(n) >= 1000 and i < #units do n = n / 1000; i = i + 1 end
+  return ("%.1f %sFE"):format(n, units[i])
+end
+
+---------------------------------------------------------------------------
 -- Rysowanie
 
 local w, h
@@ -259,10 +348,11 @@ local function drawHeader(title)
   put(w - #clock, 1, clock, colors.white, colors.blue)
 end
 
--- Naglowek z zakladkami ZOLWIE / LAWA
+-- Naglowek z zakladkami ZOLWIE / LAWA / PRAD
 local function drawTabs()
   fillRow(1, colors.blue)
-  put(1, 1, " SCADA ", colors.white, colors.blue)
+  if DEMO then put(1, 1, " DEMO  ", colors.yellow, colors.blue)
+  else put(1, 1, " SCADA ", colors.white, colors.blue) end
 
   local function tab(x, label, name, alarm)
     local active = (view == name)
@@ -271,8 +361,8 @@ local function drawTabs()
   end
   tab(9, " ZOLWIE ", "list")
   tab(18, " LAWA ", "lava", #lava.history > 0 and lava.total < lavaLow)
+  tab(25, " PRAD ", "energy", energyLow())
 
-  if DEMO then put(25, 1, "[DEMO]", colors.yellow, colors.blue) end
   local clock = textutils.formatTime(os.time(), true)
   put(w - #clock, 1, clock, colors.white, colors.blue)
 end
@@ -516,6 +606,90 @@ local function drawLavaCfg()
   drawFooter("Zmiany zapisuja sie od razu")
 end
 
+local function drawEnergy()
+  drawTabs()
+  local pct = energyPct()
+  local low = energyLow()
+  local barCol = pct < ENERGY_LOW_PCT and colors.red
+              or (pct < 50 and colors.yellow or colors.lime)
+
+  -- Podsumowanie i bilans
+  put(2, 3, ("%s / %s"):format(fmtFE(energy.total), fmtFE(energy.capacity)),
+      barCol, colors.black)
+  local rate = energyRate()
+  local rateTxt = (rate > 0 and "+" or "") .. fmtFE(rate) .. "/t"
+  local rateCol = rate < 0 and colors.red or (rate > 0 and colors.lime or colors.lightGray)
+  put(w - #rateTxt, 3, rateTxt, rateCol, colors.black)
+
+  -- Pasek naladowania z procentem
+  local pctTxt = ("%3d%%"):format(math.floor(pct + 0.5))
+  local barW = w - 2 - #pctTxt - 1
+  local filled = math.floor(barW * clamp(pct / 100, 0, 1) + 0.5)
+  put(2, 4, (" "):rep(filled), nil, barCol)
+  put(2 + filled, 4, (" "):rep(barW - filled), nil, colors.gray)
+  put(w - #pctTxt, 4, pctTxt, colors.white, colors.black)
+
+  -- Czas do pelna / do zera przy obecnym bilansie
+  if rate ~= 0 then
+    local ticks = rate > 0 and (energy.capacity - energy.total) / rate or energy.total / -rate
+    local mins = ticks / 20 / 60
+    local txt = mins >= 600 and ">10 h" or
+                (mins >= 60 and ("%.1f h"):format(mins / 60) or ("%d min"):format(math.floor(mins)))
+    put(2, 5, (rate > 0 and "Pelne za: " or "Puste za: ") .. txt,
+        rate > 0 and colors.lightGray or colors.orange, colors.black)
+  end
+
+  -- Magazyny (max 4 wiersze)
+  fillRow(6, colors.gray)
+  put(2, 6, "MAGAZYN", colors.lightGray, colors.gray)
+  put(w - 13, 6, "STAN", colors.lightGray, colors.gray)
+  local y = 7
+  for i, s in ipairs(energy.sources) do
+    if i > 4 then
+      put(2, y, ("... i %d wiecej"):format(#energy.sources - 4), colors.lightGray, colors.black)
+      y = y + 1
+      break
+    end
+    put(2, y, fit(s.name, w - 16), s.offline and colors.red or colors.white, colors.black)
+    if s.offline then
+      put(w - 13, y, ("%13s"):format("-"), colors.lightGray, colors.black)
+    else
+      local sp = s.capacity > 0 and math.floor(s.energy / s.capacity * 100 + 0.5) or 0
+      local amount = (fmtFE(s.energy):gsub("FE", ""))
+      put(w - 13, y, ("%4d%%%8s"):format(sp, amount),
+          colors.yellow, colors.black)
+    end
+    y = y + 1
+  end
+  if #energy.sources == 0 then
+    put(2, y, "Brak magazynow energii (FE)", colors.red, colors.black)
+    y = y + 1
+  end
+
+  -- Wykres historii naladowania
+  local gTop, gBot = y + 2, h - 1
+  if gBot - gTop >= 1 and energy.capacity > 0 then
+    put(2, gTop - 1, ("Historia (%d min)"):format(math.floor(HISTORY_MAX * REFRESH / 60)),
+        colors.lightGray, colors.black)
+    local gh, gw = gBot - gTop + 1, w - 2
+    local hist = energy.history
+    local start = math.max(1, #hist - gw + 1)
+    for i = start, #hist do
+      local x = 2 + gw - 1 - (#hist - i)
+      local p = clamp(hist[i].v / energy.capacity, 0, 1)
+      local bh = math.floor(gh * p + 0.5)
+      local col = p * 100 < ENERGY_LOW_PCT and colors.red or colors.yellow
+      for r = 0, bh - 1 do put(x, gBot - r, " ", nil, col) end
+    end
+  end
+
+  if low then
+    drawFooter(("ALARM: prad ponizej %d%%"):format(ENERGY_LOW_PCT), colors.red)
+  else
+    drawFooter(("Magazynow: %d | probka co %d s"):format(#energy.sources, REFRESH))
+  end
+end
+
 local function draw()
   w, h = mon.getSize()
   buttons = {}
@@ -531,6 +705,7 @@ local function draw()
   if view == "config" and selected then drawConfig()
   elseif view == "lava" then drawLava()
   elseif view == "lavacfg" then drawLavaCfg()
+  elseif view == "energy" then drawEnergy()
   else drawList() end
 end
 
@@ -545,6 +720,12 @@ local function receiver()
     if proto == LAVA_PROTOCOL and type(msg) == "table" and msg.cmd == "lava" then
       remoteLava[id] = {
         label = msg.label, total = tonumber(msg.total) or 0,
+        sources = type(msg.sources) == "table" and msg.sources or {}, last = now(),
+      }
+    elseif proto == ENERGY_PROTOCOL and type(msg) == "table" and msg.cmd == "energy" then
+      remoteEnergy[id] = {
+        label = msg.label,
+        energy = tonumber(msg.energy) or 0, capacity = tonumber(msg.capacity) or 0,
         sources = type(msg.sources) == "table" and msg.sources or {}, last = now(),
       }
     elseif proto == PROTOCOL and type(msg) == "table" then
@@ -570,6 +751,7 @@ end
 local function pinger()
   while true do
     sampleLava()
+    sampleEnergy()
     if DEMO then
       tickDemo()
       draw()
