@@ -12,6 +12,7 @@ Programy dla CC: Tweaked (Minecraft) do wyrównywania terenu i stawiania pochodn
 | `lavasensor.lua` | komputer przy zbiornikach (zapisz jako `lavasensor`) | czujnik lawy: wysyła zapas bezprzewodowo do SCADA; `lavasensor install` = autostart |
 | `energysensor.lua` | komputer przy magazynach FE (zapisz jako `energysensor`) | czujnik prądu (np. Powah): wysyła stan FE do SCADA; `energysensor install` = autostart |
 | `pscada.lua` | pocket computer (zapisz jako `pscada`) | mini SCADA: żółwie, lawa, prąd na ekranie pocketa; `pscada demo` = dane testowe |
+| `autostart.lua` | zwykły komputer (zapisz jako `autostart`) | autostart SCADA i czujników z auto-restartem |
 | `update.lua` | wszędzie (zapisz jako `update`) | pobiera najnowsze wersje odpowiednich plików |
 
 ## Instalacja
@@ -69,3 +70,16 @@ SCADA sama pilnuje stanu i podnosi alarmy:
 - **Pocket** (`pscada`, klawisz 4): te same alarmy, potwierdzanie zdalne.
 - **Syrena**: speaker podłączony do komputera SCADA gra, dopóki alarm krytyczny nie zostanie potwierdzony.
 - **Prawdziwy telefon** (opcjonalnie): zainstaluj aplikację **ntfy**, zasubskrybuj swój tajny temat i na komputerze SCADA wpisz `set scada.ntfy <temat>`.
+
+## Autostart i aktualizacja
+
+Na zwykłym komputerze (SCADA, czujniki):
+
+```
+scada install          # albo: lavasensor install / energysensor install
+reboot
+```
+
+`autostart list` pokazuje, co startuje, a `autostart remove <program>` usuwa program z autostartu. Kilka programów może działać razem na jednym komputerze. Program, który się wywali, uruchamia się ponownie po 5 s.
+
+**Przycisk UPDATE** (zakładka ALM na monitorze SCADA, trzeba go dotknąć dwa razy) wysyła polecenie aktualizacji do wszystkich żółwi i czujników, a potem aktualizuje i restartuje samą SCADA. Żółwie, które akurat pracują, są pomijane. Pockety aktualizujesz ręcznie przez `update`.

@@ -39,6 +39,12 @@ local HISTORY_MAX = 120     -- probek historii (120 x 5 s = 10 min)
 
 local DEMO = ({ ... })[1] == "demo"
 
+-- scada install -> uruchamiaj SCADA automatycznie po starcie komputera
+if ({ ... })[1] == "install" then shell.run("autostart", "add", "scada"); return end
+
+local ADMIN_PROTOCOL = "scada_admin"   -- zdalny UPDATE zolwi i czujnikow
+local TERM_ROW = 11                    -- wiersz statusu na ekranie komputera
+
 local mon = peripheral.find("monitor")
 if not mon then error("Brak monitora!") end
 if not mon.isColor() then error("Potrzebny ADVANCED monitor (kolorowy)") end
@@ -854,6 +860,31 @@ end
 
 local function hhmm(ms) return os.date("%H:%M", math.floor(ms / 1000)) end
 
+-- Przycisk UPDATE: pierwsze dotkniecie uzbraja (5 s), drugie uruchamia
+local updateArmed = 0
+local updateRequested = false
+local updating = nil        -- { replies = { {id, label, busy} } } w trakcie aktualizacji
+
+local function hasAutostart()
+  if not fs.exists("startup.lua") then return false end
+  local f = fs.open("startup.lua", "r"); local c = f.readAll(); f.close()
+  local header = c:match("^%-%- autostart: ([^\n]*)")
+  return header ~= nil and ("," .. header .. ","):find(",scada,", 1, true) ~= nil
+end
+
+local function pressUpdate()
+  if now() < updateArmed then
+    updateArmed, updateRequested = 0, true
+  else
+    updateArmed = now() + 5000
+    if hasAutostart() then
+      setMsg("UPDATE: dotknij jeszcze raz, aby potwierdzic", colors.yellow)
+    else
+      setMsg("Brak autostartu (scada install)! Dotknij ponownie", colors.orange)
+    end
+  end
+end
+
 local function drawAlarms()
   drawTabs()
 
@@ -891,6 +922,12 @@ local function drawAlarms()
   if unacked > 0 then
     button(2, y, " POTWIERDZ WSZYSTKIE ", colors.green, ackAll)
   end
+  -- aktualizacja SCADA + zdalnie zolwi i czujnikow
+  if now() < updateArmed then
+    button(w - 8, y, " PEWNE? ", colors.orange, pressUpdate, colors.black)
+  else
+    button(w - 8, y, " UPDATE ", colors.blue, pressUpdate)
+  end
   y = y + 2
 
   -- Dziennik zdarzen
@@ -909,6 +946,21 @@ local function drawAlarms()
                                               speaker and "ON" or "brak"))
 end
 
+local function drawUpdating()
+  fillRow(1, colors.orange)
+  put(2, 1, "AKTUALIZACJA", colors.black, colors.orange)
+  put(2, 3, "Wyslano UPDATE do zolwi i czujnikow", colors.white, colors.black)
+  local y = 5
+  for _, r in ipairs(updating.replies) do
+    if y > h - 2 then break end
+    put(2, y, fit(("#%d %s"):format(r.id, r.label or ""), w - 15), colors.white, colors.black)
+    put(w - 12, y, r.busy and "zajety-pomin" or "aktualizuje",
+        r.busy and colors.orange or colors.lime, colors.black)
+    y = y + 1
+  end
+  put(2, h - 1, "Zaraz aktualizacja i restart SCADA", colors.yellow, colors.black)
+end
+
 local function draw()
   w, h = mon.getSize()
   buttons = {}
@@ -921,7 +973,8 @@ local function draw()
     return
   end
 
-  if view == "config" and selected then drawConfig()
+  if updating then drawUpdating()
+  elseif view == "config" and selected then drawConfig()
   elseif view == "lava" then drawLava()
   elseif view == "lavacfg" then drawLavaCfg()
   elseif view == "energy" then drawEnergy()
@@ -948,6 +1001,12 @@ local function receiver()
         energy = tonumber(msg.energy) or 0, capacity = tonumber(msg.capacity) or 0,
         sources = type(msg.sources) == "table" and msg.sources or {}, last = now(),
       }
+    elseif proto == ADMIN_PROTOCOL and type(msg) == "table"
+           and (msg.cmd == "updating" or msg.cmd == "busy") then
+      if updating then
+        updating.replies[#updating.replies + 1] = { id = id, label = msg.label, busy = msg.cmd == "busy" }
+        draw()
+      end
     elseif proto == ALARM_PROTOCOL and type(msg) == "table" and msg.cmd == "ack" then
       -- potwierdzenie z pocketa (pscada)
       if msg.all then ackAll() elseif msg.key then ackAlarm(msg.key) end
@@ -1008,6 +1067,23 @@ local function blinker()
   end
 end
 
+-- UPDATE: zdalnie zolwie i czujniki, potem sama SCADA + restart komputera
+local function runUpdate()
+  updating = { replies = {} }
+  if not DEMO then rednet.broadcast({ cmd = "update" }, ADMIN_PROTOCOL) end
+  draw()
+  sleep(3) -- odpowiedzi zbiera receiver i dopisuje na ekranie
+  if DEMO then
+    updating = nil
+    setMsg("Demo: aktualizacja pominieta", colors.yellow)
+    draw()
+    return
+  end
+  term.setCursorPos(1, TERM_ROW + 1)
+  shell.run("update")
+  os.reboot()
+end
+
 -- Obsluga dotyku monitora
 local function ui()
   while true do
@@ -1018,6 +1094,10 @@ local function ui()
       end
       if view == "alarms" then syncAlarms() end -- potwierdzenia -> pockety
       draw()
+      if updateRequested then
+        updateRequested = false
+        runUpdate()
+      end
     elseif ev == "monitor_resize" then
       draw()
     end
@@ -1026,8 +1106,10 @@ end
 
 ---------------------------------------------------------------------------
 
-term.clear(); term.setCursorPos(1, 1)
-print("SCADA dziala na monitorze. Ctrl+T - wyjscie.")
+-- Bez term.clear(): na tym samym komputerze moga dzialac czujniki (wiersze 1-9)
+term.setCursorPos(1, TERM_ROW); term.clearLine()
+term.write("SCADA dziala na monitorze. Ctrl+T - wyjscie.")
+term.setCursorPos(1, TERM_ROW + 1)
 
 if DEMO then initDemo() end
 draw()

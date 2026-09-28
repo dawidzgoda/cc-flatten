@@ -42,14 +42,28 @@ local function parseStart(msg)
   return runArgs
 end
 
--- W trakcie pracy: odpowiada na ping, odrzuca kolejne starty
+-- Zdalna aktualizacja z przycisku UPDATE na SCADA
+local ADMIN_PROTOCOL = "scada_admin"
+
+local function remoteUpdate(sender)
+  rednet.send(sender, { cmd = "updating", label = os.getComputerLabel() }, ADMIN_PROTOCOL)
+  print("Zdalna aktualizacja...")
+  shell.run("update")
+  os.reboot()
+end
+
+-- W trakcie pracy: odpowiada na ping, odrzuca kolejne starty i aktualizacje
 local function busyResponder()
   while true do
-    local sender, msg = rednet.receive(PROTOCOL)
-    if type(msg) == "table" and msg.cmd == "ping" then
+    local sender, msg, proto = rednet.receive()
+    if type(msg) ~= "table" then
+      -- nic
+    elseif proto == PROTOCOL and msg.cmd == "ping" then
       sendPong(sender)
-    elseif type(msg) == "table" and msg.cmd == "start" then
+    elseif proto == PROTOCOL and msg.cmd == "start" then
       rednet.send(sender, { cmd = "error", text = "Zolw jest zajety" }, PROTOCOL)
+    elseif proto == ADMIN_PROTOCOL and msg.cmd == "update" then
+      rednet.send(sender, { cmd = "busy", label = os.getComputerLabel() }, ADMIN_PROTOCOL)
     end
   end
 end
@@ -57,8 +71,14 @@ end
 print(("Zolw #%d czeka na polecenia..."):format(os.getComputerID()))
 
 while true do
-  local sender, msg = rednet.receive(PROTOCOL)
-  if type(msg) == "table" and msg.cmd == "ping" then
+  local sender, msg, proto = rednet.receive()
+  if proto == ADMIN_PROTOCOL and type(msg) == "table" and msg.cmd == "update" then
+    remoteUpdate(sender)
+
+  elseif proto ~= PROTOCOL then
+    -- inne protokoly (czujniki, alarmy) nas nie dotycza
+
+  elseif type(msg) == "table" and msg.cmd == "ping" then
     sendPong(sender)
 
   elseif type(msg) == "table" and msg.cmd == "start" then

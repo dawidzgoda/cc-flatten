@@ -14,38 +14,10 @@ local INTERVAL      = 5  -- sekundy miedzy wysylkami
 local LAVA        = "minecraft:lava"
 local LAVA_BUCKET = "minecraft:lava_bucket"
 
-local SENSORS    = { "lavasensor", "energysensor" }
-local STATUS_ROW = 1   -- wiersze 1-4 ekranu (energysensor ma 6-9)
+local ADMIN_PROTOCOL = "scada_admin"   -- zdalny UPDATE ze SCADA
+local STATUS_ROW = 1   -- wiersze 1-4 ekranu (energysensor 6-9, scada 11)
 
--- Autostart: startup.lua uruchamia rownolegle wszystkie zainstalowane czujniki
-local function install(me)
-  local list, content = {}, ""
-  if fs.exists("startup.lua") then
-    local f = fs.open("startup.lua", "r"); content = f.readAll(); f.close()
-  end
-  for _, n in ipairs(SENSORS) do
-    if n == me or content:find(n, 1, true) then list[#list + 1] = n end
-  end
-  if content ~= "" and not content:find("^%-%- sensors:") then
-    fs.delete("startup.bak"); fs.copy("startup.lua", "startup.bak")
-    print("Stary startup.lua zapisano jako startup.bak")
-  end
-
-  local names = table.concat(list, ",")
-  local f = fs.open("startup.lua", "w")
-  f.writeLine("-- sensors: " .. names)
-  f.writeLine("term.clear()")
-  f.writeLine("local fns = {}")
-  f.writeLine(('for n in ("%s"):gmatch("[^,]+") do'):format(names))
-  f.writeLine("  fns[#fns + 1] = function() shell.run(n) end")
-  f.writeLine("end")
-  f.writeLine("parallel.waitForAll(table.unpack(fns))")
-  f.close()
-  print("Autostart: " .. names)
-  print("Wpisz 'reboot', zeby uruchomic.")
-end
-
-if ({ ... })[1] == "install" then install("lavasensor"); return end
+if ({ ... })[1] == "install" then shell.run("autostart", "add", "lavasensor"); return end
 
 local modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
 if not modem then error("Brak wireless/ender modemu!") end
@@ -96,6 +68,23 @@ local function line(row, text)
   term.setCursorPos(1, row); term.clearLine(); term.write(text)
 end
 
+-- Czeka INTERVAL sekund, obslugujac zdalny UPDATE ze SCADA
+local function waitInterval()
+  local timer = os.startTimer(INTERVAL)
+  while true do
+    local ev, a, b, c = os.pullEvent()
+    if ev == "timer" and a == timer then return end
+    if ev == "rednet_message" and c == ADMIN_PROTOCOL and type(b) == "table"
+       and b.cmd == "update" and not _G.ccUpdating then
+      _G.ccUpdating = true -- drugi czujnik na tym komputerze nie powtorzy
+      rednet.send(a, { cmd = "updating", label = label }, ADMIN_PROTOCOL)
+      line(STATUS_ROW + 3, "Zdalna aktualizacja...")
+      shell.run("update")
+      os.reboot()
+    end
+  end
+end
+
 line(STATUS_ROW, ("Czujnik lawy '%s' (#%d)"):format(label, os.getComputerID()))
 line(STATUS_ROW + 1, "Wysylam dane do SCADA co " .. INTERVAL .. " s.")
 
@@ -108,5 +97,5 @@ while true do
   line(STATUS_ROW + 2, ("[%s] Zrodel: %d, lawa: %.1f B"):format(
     textutils.formatTime(os.time(), true), #sources, total / 1000))
 
-  sleep(INTERVAL)
+  waitInterval()
 end
