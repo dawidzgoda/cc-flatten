@@ -446,7 +446,49 @@ if NTFY_TOPIC == "" then NTFY_TOPIC = nil end
 local alarms   = {}   -- key -> { key, text, crit, group, since, active, acked }
 local latched  = {}   -- key -> { text, crit } alarmy zdarzeniowe, trwaja do potwierdzenia
 local alarmLog = {}   -- { t, text, color }, najnowsze na poczatku
-local speaker  = peripheral.find("speaker")
+-- Syrena: wszystkie speakery podlaczone do komputera (mozna rozstawic kilka
+-- po bazie przez wired modemy). Rodzaj dzwieku alarmu krytycznego:
+--   set scada.siren bell    - dzwon + syrena dwutonowa (domyslnie)
+--   set scada.siren notes   - sama syrena dwutonowa
+--   set scada.siren horn    - rog rajdu (bardzo glosny, slychac daleko)
+--   set scada.siren_volume 3   (0.5 - 3)
+local speakers   = { peripheral.find("speaker") }
+local SIREN      = settings.get("scada.siren", "bell")
+local SIREN_VOL  = clamp(tonumber(settings.get("scada.siren_volume", 3)) or 3, 0.5, 3)
+
+local function forSpeakers(fn)
+  for _, s in ipairs(speakers) do pcall(fn, s) end
+end
+
+-- Odtwarza dzwiek (blokuje ok. 2 s - uruchamiane w osobnym watku 'siren')
+local function playSiren(crit)
+  if #speakers == 0 then return end
+  if not crit then
+    -- ostrzezenie: dwa krotkie, wysokie sygnaly
+    for _ = 1, 2 do
+      forSpeakers(function(s) s.playNote("pling", SIREN_VOL, 18) end)
+      sleep(0.15)
+    end
+    return
+  end
+  if SIREN == "horn" then
+    forSpeakers(function(s) s.playSound("minecraft:event.raid.horn", SIREN_VOL) end)
+    return
+  end
+  if SIREN ~= "notes" then
+    forSpeakers(function(s) s.playSound("minecraft:block.bell.use", SIREN_VOL, 1) end)
+    sleep(0.1)   -- w tym samym ticku co playSound speaker nie zagra nut
+  end
+  -- syrena dwutonowa: wysoki / niski, 4 razy
+  for _ = 1, 4 do
+    forSpeakers(function(s) s.playNote("bit", SIREN_VOL, 20); s.playNote("bell", SIREN_VOL, 20) end)
+    sleep(0.2)
+    forSpeakers(function(s) s.playNote("bit", SIREN_VOL, 10); s.playNote("bell", SIREN_VOL, 10) end)
+    sleep(0.2)
+  end
+end
+
+local function soundAlarm(crit) os.queueEvent("scada_siren", crit and "crit" or "warn") end
 local blink    = false
 
 local function logEvent(text, color)
@@ -581,6 +623,7 @@ local function evalAlarms()
     return
   end
   local cond = alarmConditions()
+  local newCrit, newWarn = false, false
 
   for key, cnd in pairs(cond) do
     local a = alarms[key]
@@ -590,7 +633,7 @@ local function evalAlarms()
       alarms[key] = a
       logEvent((cnd.crit and "ALARM: " or "UWAGA: ") .. cnd.text,
                cnd.crit and colors.red or colors.orange)
-      if speaker then pcall(speaker.playNote, cnd.crit and "bell" or "pling", 3, 12) end
+      if cnd.crit then newCrit = true else newWarn = true end
       notifyPhone(a)
     else
       a.text, a.crit = cnd.text, cnd.crit
@@ -605,9 +648,11 @@ local function evalAlarms()
     end
   end
 
-  -- syrena co cykl, dopoki jest niepotwierdzony alarm krytyczny
+  -- syrena: co cykl, dopoki jest niepotwierdzony alarm krytyczny;
+  -- nowe ostrzezenie (bez krytycznych) - krotki sygnal
   local _, _, critUnacked = alarmCounts()
-  if critUnacked and speaker then pcall(speaker.playNote, "bell", 3, 18) end
+  if critUnacked or newCrit then soundAlarm(true)
+  elseif newWarn then soundAlarm(false) end
 
   syncAlarms()
 end
@@ -1439,6 +1484,7 @@ local function drawAlarms()
   if y < h - 1 then
     fillRow(y, colors.gray)
     put(2, y, "ZDARZENIA", colors.lightGray, colors.gray)
+    button(w - 13, y, " TEST SYRENY ", colors.lightGray, function() soundAlarm(true) end, colors.black)
     y = y + 1
     for _, ev in ipairs(alarmLog) do
       if y > h - 1 then break end
@@ -1448,7 +1494,7 @@ local function drawAlarms()
   end
 
   drawFooter(("ntfy: %s | syrena: %s"):format(NTFY_TOPIC and "ON" or "off",
-                                              speaker and "ON" or "brak"))
+                                              #speakers > 0 and (#speakers .. "x " .. SIREN) or "brak"))
 end
 
 local function drawUpdating()
@@ -1562,6 +1608,15 @@ local function pinger()
   end
 end
 
+-- Syrena w osobnym watku, zeby dzwiek (ok. 2 s) nie blokowal ekranu.
+-- Zadania przychodzace w trakcie grania sa pomijane (sleep je odrzuca).
+local function siren()
+  while true do
+    local _, kind = os.pullEvent("scada_siren")
+    playSiren(kind == "crit")
+  end
+end
+
 -- Miganie niepotwierdzonych alarmow (odswieza ekran tylko gdy sa takie alarmy)
 local function blinker()
   while true do
@@ -1622,4 +1677,4 @@ term.setCursorPos(1, TERM_ROW + 1)
 
 if DEMO then initDemo(); tickDemo() end
 draw()
-parallel.waitForAny(receiver, pinger, ui, blinker)
+parallel.waitForAny(receiver, pinger, ui, blinker, siren)

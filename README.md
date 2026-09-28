@@ -91,7 +91,7 @@ Wszystko zapisuje się na dysku komputera SCADA i przetrwa restart oraz UPDATE: 
 | żółw lub czujnik offline, mało paliwa | uwaga | – |
 
 - **Pocket** (`pscada`, klawisz 3): te same alarmy, potwierdzanie zdalne.
-- **Syrena**: speaker podłączony do komputera SCADA gra, dopóki alarm krytyczny nie zostanie potwierdzony.
+- **Syrena**: speakery podłączone do komputera SCADA (może ich być kilka, przez wired modemy). Alarm krytyczny: dzwon + syrena dwutonowa co 5 s do potwierdzenia; ostrzeżenie: dwa krótkie sygnały. Przycisk TEST SYRENY w zakładce ALM. Dźwięk: `set scada.siren bell|notes|horn` (horn = róg rajdu, bardzo głośny), głośność `set scada.siren_volume 3`.
 - **Prawdziwy telefon** (opcjonalnie): aplikacja **ntfy**, zasubskrybuj swój tajny temat i na komputerze SCADA wpisz `set scada.ntfy <temat>`.
 
 ## Autostart i aktualizacja
