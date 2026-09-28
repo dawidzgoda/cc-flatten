@@ -379,7 +379,8 @@ local function initDemo()
                                        progress = 0.7, fuel = 320 } }
   known[21] = { last = now() - 60000, data = { label = "Zgubiony", state = "idle", fuel = 0 } }
   if not cfg["Wyspa Glowna"] then
-    cfg["Wyspa Glowna"] = { ["fluid:minecraft:lava"] = 200, ["item:minecraft:coal"] = 128 }
+    cfg["Wyspa Glowna"] = { ["fluid:minecraft:lava"] = 200, ["item:minecraft:coal"] = 128,
+                            ["cap:fluid:minecraft:lava"] = 720 }
   end
 end
 
@@ -925,6 +926,35 @@ local function openCfg(t)
   cfgTarget, view = t, "pcfg"
 end
 
+-- Prognoza: za ile pelne/puste przy obecnym tempie.
+-- rate i value w tych samych jednostkach (rate na minute); cap 0 = nieznana
+local function fmtMins(m)
+  if m >= 600 then return ">10 h" end
+  if m >= 60 then return ("%.1f h"):format(m / 60) end
+  return ("%d min"):format(math.max(1, math.floor(m + 0.5)))
+end
+
+local function etaText(rate, value, cap)
+  if rate > 0 and cap and cap > 0 then
+    if value >= cap then return "pelne", colors.lime end
+    return "pelne za " .. fmtMins((cap - value) / rate), colors.lime
+  elseif rate < 0 then
+    if value <= 0 then return "puste", colors.red end
+    return "puste za " .. fmtMins(value / -rate), colors.orange
+  end
+  return nil
+end
+
+-- Tempo zmiany serii na minute z ostatniej minuty probek (co REFRESH s)
+local function seriesRate(series)
+  if not series or #series.short < 3 then return 0 end
+  local n = math.min(#series.short, 60 / REFRESH + 1)
+  local a, b = series.short[#series.short - n + 1], series.short[#series.short]
+  local r = (b - a) / ((n - 1) * REFRESH / 60)
+  if math.abs(r) < 1e-6 then return 0 end
+  return r
+end
+
 -- Krotkie podsumowanie grupy do karty
 local function groupSummary(g)
   local s, parts = g.sum, {}
@@ -935,7 +965,11 @@ local function groupSummary(g)
   end
   if maxSu then parts[#parts + 1] = ("SU %d%%"):format(math.floor(maxSu)) end
   if s.fluidList[1] then
-    parts[#parts + 1] = shortName(s.fluidList[1].name) .. " " .. fmtNum(s.fluidList[1].amount / 1000) .. "B"
+    local f = s.fluidList[1]
+    local cap = getCfg(g.label, "cap:fluid:" .. f.name, 0)
+    parts[#parts + 1] = shortName(f.name) .. " " .. (cap > 0
+      and ("%d%%"):format(math.floor(f.amount / 1000 / cap * 100))
+      or (fmtNum(f.amount / 1000) .. "B"))
   end
   if s.tanks > 0 and not s.fluidList[1] then parts[#parts + 1] = s.tanks .. " zb. pustych" end
   if #s.speed > 0 then parts[#parts + 1] = ("%d RPM"):format(s.speed[1].speed) end
@@ -1049,6 +1083,9 @@ local function groupRows(label)
           right = (rate > 0 and "+" or "") .. fmtFE(rate) .. "/t",
           rfg = rate < 0 and colors.red or (rate > 0 and colors.lime or colors.lightGray),
           action = openEnergy })
+    -- prognoza: FE/t -> FE/min (1200 tickow na minute)
+    local eta, etaCol = etaText(rate * 1200, s.energy, s.energyCap)
+    if eta then row({ text = eta, fg = etaCol, action = openEnergy }) end
     if #s.energySrc > 1 then
       for _, src in ipairs(s.energySrc) do
         row({ text = " " .. shortName(src.id), fg = colors.lightGray,
@@ -1092,14 +1129,30 @@ local function groupRows(label)
     local shown = {}
     local function fluidRow(name, amount, tanks)
       local min = getCfg(label, "fluid:" .. name, 0)
+      local cap = getCfg(label, "cap:fluid:" .. name, 0)   -- wiadra, 0 = nieznana
       local low = min > 0 and amount < min * 1000
+      local open = function() openCfg({ group = label, key = "fluid:" .. name,
+        title = shortName(name), desc = "Alarm, gdy mniej niz (wiadra)",
+        unit = "B", default = 0, big = 64, small = 8, max = 99999,
+        capKey = "cap:fluid:" .. name }) end
+      local right = buckets(amount)
+      if cap > 0 then right = ("%s/%d B"):format(fmtNum(amount / 1000), cap) end
+      if min > 0 then right = right .. " /min " .. min end
       row({ text = shortName(name) .. (tanks and (" (" .. tanks .. ")") or ""),
-            fg = low and colors.red or colors.cyan,
-            right = buckets(amount) .. (min > 0 and (" /min " .. min) or ""),
-            rfg = low and colors.red or colors.white,
-            action = function() openCfg({ group = label, key = "fluid:" .. name,
-              title = shortName(name), desc = "Alarm, gdy mniej niz (wiadra)",
-              unit = "B", default = 0, big = 64, small = 8, max = 99999 }) end })
+            fg = low and colors.red or colors.cyan, right = right,
+            rfg = low and colors.red or colors.white, action = open })
+      -- z ustawiona pojemnoscia: pasek wypelnienia i prognoza
+      if cap > 0 then
+        row({ bar = amount / 1000 / cap, barCol = low and colors.red
+              or (name:find("lava") and colors.orange or colors.cyan) })
+        local series = g.series and g.series["fluid:" .. name]
+        local eta, etaCol = etaText(seriesRate(series), amount / 1000, cap)
+        if eta then
+          local r = seriesRate(series)
+          row({ text = " " .. eta, fg = etaCol, right = ("%+.1f B/min"):format(r),
+                rfg = etaCol, action = open })
+        end
+      end
       shown[name] = true
     end
     for _, f in ipairs(s.fluidList) do fluidRow(f.name, f.amount, f.tanks) end
@@ -1206,13 +1259,16 @@ local function resample(data, cw)
 end
 
 -- Wykres slupkowy; prog rysowany czerwona linia. Zwraca skale (maks.).
-local function drawChart(x0, y0, cw, ch, data, thr, isMax, col)
+-- full > 0 (znana pojemnosc): gora wykresu = pelny zbiornik.
+local function drawChart(x0, y0, cw, ch, data, thr, isMax, col, full)
   data = resample(data, cw)
   local n = #data
-  local maxV = (thr and thr > 0) and thr or 0
-  for i = 1, n do maxV = math.max(maxV, data[i]) end
-  if maxV <= 0 then maxV = 1 end
-  maxV = maxV * 1.1
+  local peak = (thr and thr > 0) and thr or 0
+  for i = 1, n do peak = math.max(peak, data[i]) end
+  if peak <= 0 then peak = 1 end
+  -- maxV = wartosc na gorze wykresu; bez pojemnosci zostawiamy 10% zapasu
+  local maxV, label = peak * 1.1, peak
+  if full and full > 0 and peak <= full then maxV, label = full, full end
 
   local heights = {}
   for i = 1, n do
@@ -1232,7 +1288,7 @@ local function drawChart(x0, y0, cw, ch, data, thr, isMax, col)
       if ty < y0 + ch - bh then put(x, ty, "-", colors.red, colors.black) end
     end
   end
-  return maxV / 1.1
+  return label
 end
 
 local function drawPointCfg()
@@ -1245,33 +1301,56 @@ local function drawPointCfg()
 
   drawHeader(t.title .. " - " .. t.group, function() view = "group" end)
 
-  -- Wartosc biezaca i przelacznik zakresu
+  -- Pojemnosc (tylko plyny - CC jej nie podaje, wpisuje sie recznie)
+  local cap = t.capKey and getCfg(t.group, t.capKey, 0) or 0
+
+  -- Wartosc biezaca (+ % wypelnienia) i przelacznik zakresu
   if series and series.last then
     local v = series.last
     local bad = thr > 0 and ((isMax and v >= thr) or (not isMax and v < thr))
-    put(2, 2, "Teraz: " .. seriesFmt(t.key, v), bad and colors.red or col, colors.black)
+    local txt = "Teraz: " .. seriesFmt(t.key, v)
+    if cap > 0 then txt = txt .. (" (%d%%)"):format(math.floor(v / cap * 100)) end
+    put(2, 2, fit(txt, w - 17), bad and colors.red or col, colors.black)
   end
   toggle(w - 15, 2, " 10 MIN ", chartRange == "short", function() chartRange = "short" end)
   toggle(w - 6, 2, " 2 H ", chartRange == "long", function() chartRange = "long" end)
 
-  -- Wykres
-  local top, bottom = 4, h - 7
+  -- Prognoza: prad z bilansu FE/t, plyny z tempa zmian (gdy znana pojemnosc)
+  local eta, etaCol
+  if t.key == "energy" and g then
+    eta, etaCol = etaText(histRate(g.hist, 50) * 1200, g.sum.energy, g.sum.energyCap)
+  elseif cap > 0 and series and series.last then
+    local r = seriesRate(series)
+    eta, etaCol = etaText(r, series.last, cap)
+    if eta then eta = eta .. (" (%+.1f B/min)"):format(r) end
+  end
+  if eta then put(2, 3, fit(eta, w - 18), etaCol, colors.black) end
+  if thr > 0 then
+    local tt = (isMax and "prog od " or "prog < ") .. seriesFmt(t.key, thr)
+    put(w - #tt, 3, tt, colors.red, colors.black)
+  end
+
+  -- Wykres (przy plynach nizszy - pod nim ustawienie pojemnosci)
+  local top, bottom = 5, t.capKey and (h - 10) or (h - 7)
   local data = series and (chartRange == "short" and series.short or series.long) or {}
-  if #data < 2 then
+  if #data < 2 or bottom - top < 1 then
     put(2, top + 1, chartRange == "short" and "Zbieram dane... (probka co 5 s)"
                                           or "Zbieram dane... (probka co minute)",
         colors.lightGray, colors.black)
   else
-    local maxV = drawChart(2, top, w - 2, bottom - top + 1, data, thr, isMax, col)
-    put(2, 3, "maks " .. seriesFmt(t.key, maxV), colors.lightGray, colors.black)
-    if thr > 0 then
-      local tt = (isMax and "prog od " or "prog < ") .. seriesFmt(t.key, thr)
-      put(w - #tt, 3, tt, colors.red, colors.black)
-    end
+    local maxV = drawChart(2, top, w - 2, bottom - top + 1, data, thr, isMax, col, cap)
+    put(2, 4, "maks " .. seriesFmt(t.key, maxV), colors.lightGray, colors.black)
     local span = chartRange == "short" and (#data * REFRESH / 60) or #data
     local left = span >= 60 and ("-%.1f h"):format(span / 60) or ("-%d min"):format(math.max(1, math.floor(span + 0.5)))
     put(2, bottom + 1, left, colors.gray, colors.black)
     put(w - 5, bottom + 1, "teraz", colors.gray, colors.black)
+  end
+
+  -- Pojemnosc zbiornikow z tym plynem (do % i prognozy)
+  if t.capKey then
+    put(2, h - 8, fit("Pojemnosc (wiadra)" .. (cap > 0 and "" or " - nieznana")
+                      .. ", Create: 8 B/blok", w - 2), colors.lightGray, colors.black)
+    numberRow(h - 7, "Poj.", cap, function(v) setCfg(t.group, t.capKey, clamp(v, 0, 99999)) end, 64, 8)
   end
 
   -- Prog alarmu
