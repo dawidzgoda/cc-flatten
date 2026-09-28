@@ -1,6 +1,6 @@
 -- update.lua - pobiera najnowsze wersje programow z GitHuba
 -- Na zolwiu: flatten, torches, startup (listener), update
--- Na pocket computerze: remote, update
+-- Na pocket computerze: remote, pscada, update
 -- Na zwyklym komputerze: scada, lavasensor, energysensor, remote, update
 
 local BASE = "https://raw.githubusercontent.com/dawidzgoda/cc-flatten/main/"
@@ -16,6 +16,7 @@ if turtle then
 elseif pocket then
   files = {
     { "remote.lua", "remote" },
+    { "pscada.lua", "pscada" },
     { "update.lua", "update" },
   }
 else
