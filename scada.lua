@@ -222,13 +222,18 @@ end
 local SHORT_MAX, LONG_MAX, LONG_STEP = 120, 120, 60000
 local HIST_FILE = "scada_hist"
 
--- Historia 2 h wczytana z dysku; trafia do serii przy pierwszych danych grupy
-local savedHist = {}
+-- Historia wczytana z dysku; trafia do serii przy pierwszych danych grupy.
+-- Format: { t = czas zapisu, groups = { grupa = { klucz = { long, short } } } }
+-- (stary format: { grupa = { klucz = long } })
+local savedHist, savedAt = {}, 0
 if not DEMO and fs.exists(HIST_FILE) then
   local f = fs.open(HIST_FILE, "r")
   local data = textutils.unserialize(f.readAll())
   f.close()
-  if type(data) == "table" then savedHist = data end
+  if type(data) == "table" then
+    if type(data.groups) == "table" then savedHist, savedAt = data.groups, tonumber(data.t) or 0
+    else savedHist = data end
+  end
 end
 
 local function pushSeries(label, g, key, v)
@@ -236,7 +241,19 @@ local function pushSeries(label, g, key, v)
   local s = g.series[key]
   if not s then
     local old = savedHist[label] and savedHist[label][key]
-    s = { short = {}, long = type(old) == "table" and old or {}, acc = 0, n = 0, t0 = now() }
+    local long, short = {}, {}
+    if type(old) == "table" then
+      if type(old.long) == "table" then
+        long = old.long
+        -- 10 min z dysku ma sens tylko, jesli zapis jest swiezy
+        if type(old.short) == "table" and now() - savedAt < SHORT_MAX * REFRESH * 1000 then
+          short = old.short
+        end
+      else
+        long = old
+      end
+    end
+    s = { short = short, long = long, acc = 0, n = 0, t0 = now() }
     g.series[key] = s
   end
   s.last = v
@@ -278,19 +295,28 @@ sampleSeries = function(label, g)
   end
 end
 
-local function saveHistory()
-  local data = {}
-  for label, g in pairs(groups) do
-    data[label] = {}
-    for key, s in pairs(g.series or {}) do
-      if #s.long > 0 then data[label][key] = s.long end
-    end
-  end
+-- Zapis tabeli do pliku (zwarty format, jesli wersja CC: Tweaked go obsluguje)
+local function writeTable(path, data)
   local ok, text = pcall(textutils.serialize, data, { compact = true })
   if not ok then text = textutils.serialize(data) end
-  local f = fs.open(HIST_FILE, "w")
+  local f = fs.open(path, "w")
   f.write(text)
   f.close()
+end
+
+local function saveHistory()
+  local out = {}
+  for label, g in pairs(groups) do
+    out[label] = {}
+    for key, s in pairs(g.series or {}) do
+      out[label][key] = { long = s.long, short = s.short }
+    end
+  end
+  -- grupy, ktore jeszcze sie nie odezwaly po starcie - zachowaj stara historie
+  for label, keys in pairs(savedHist) do
+    if not out[label] then out[label] = keys end
+  end
+  writeTable(HIST_FILE, { t = now(), groups = out })
 end
 
 ---------------------------------------------------------------------------
@@ -483,7 +509,16 @@ local function syncAlarms()
   rednet.broadcast({ cmd = "alarms", list = list }, ALARM_PROTOCOL)
 end
 
+-- Po starcie czekamy, az zolwie i czujniki sie odezwa; inaczej odtworzone
+-- z dysku alarmy "ustapilyby" na chwile i wrocily jako nowe (z ntfy).
+local STARTUP_GRACE = 20000
+local startTime = now()
+
 local function evalAlarms()
+  if not DEMO and now() - startTime < STARTUP_GRACE then
+    syncAlarms()
+    return
+  end
   local cond = alarmConditions()
 
   for key, cnd in pairs(cond) do
@@ -528,6 +563,31 @@ end
 local function ackAll()
   for key in pairs(alarms) do ackAlarm(key) end
 end
+
+---------------------------------------------------------------------------
+-- Stan na dysku: alarmy (z potwierdzeniami), dziennik zdarzen,
+-- parametry startu zolwi. Zapis co 30 s i przed UPDATE.
+
+local STATE_FILE = "scada_state"
+
+local function saveState()
+  if DEMO then return end
+  writeTable(STATE_FILE, { alarms = alarms, latched = latched, log = alarmLog, params = params })
+end
+
+local function loadState()
+  if DEMO or not fs.exists(STATE_FILE) then return end
+  local f = fs.open(STATE_FILE, "r")
+  local data = textutils.unserialize(f.readAll())
+  f.close()
+  if type(data) ~= "table" then return end
+  for k, v in pairs(data.alarms or {}) do alarms[k] = v end
+  for k, v in pairs(data.latched or {}) do latched[k] = v end
+  for _, e in ipairs(data.log or {}) do alarmLog[#alarmLog + 1] = e end
+  for k, v in pairs(data.params or {}) do params[k] = v end
+end
+
+loadState()
 
 ---------------------------------------------------------------------------
 -- Rysowanie: podstawy
@@ -1285,6 +1345,7 @@ local function receiver()
       -- potwierdzenie z pocketa (pscada)
       if msg.all then ackAll() elseif msg.key then ackAlarm(msg.key) end
       syncAlarms()
+      pcall(saveState)
       draw()
     elseif proto == PROTOCOL then
       if msg.cmd == "pong" then
@@ -1312,7 +1373,7 @@ local function receiver()
 end
 
 -- Co REFRESH sekund odpytuje zolwie, liczy alarmy i odswieza ekran
-local lastHistSave = now()
+local lastHistSave, lastStateSave = now(), now()
 local function pinger()
   while true do
     if DEMO then
@@ -1323,10 +1384,15 @@ local function pinger()
     end
     evalAlarms()
     draw()
-    -- historia 2 h na dysk co 5 minut (przetrwa restart i UPDATE)
-    if not DEMO and now() - lastHistSave > 300000 then
+    -- zapis na dysk (przetrwa restart i UPDATE):
+    -- historia wykresow co minute, stan (alarmy, dziennik, zolwie) co 30 s
+    if not DEMO and now() - lastHistSave > 60000 then
       lastHistSave = now()
       pcall(saveHistory)
+    end
+    if not DEMO and now() - lastStateSave > 30000 then
+      lastStateSave = now()
+      pcall(saveState)
     end
     sleep(DEMO and REFRESH or (REFRESH - 1.5))
   end
@@ -1355,6 +1421,7 @@ local function runUpdate()
     return
   end
   pcall(saveHistory)
+  pcall(saveState)
   term.setCursorPos(1, TERM_ROW + 1)
   shell.run("update")
   os.reboot()
@@ -1369,6 +1436,7 @@ local function ui()
         if y == b.y and x >= b.x1 and x <= b.x2 then b.action(); break end
       end
       if view == "alarms" then syncAlarms() end -- potwierdzenia -> pockety
+      pcall(saveState)                           -- potwierdzenia, parametry zolwi
       draw()
       if updateRequested then
         updateRequested = false

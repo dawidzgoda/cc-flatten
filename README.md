@@ -72,7 +72,7 @@ Zakładki na monitorze (dotyk):
 - **ZOLWIE** — stan żółwi; dotknij żółwia → program i parametry → START,
 - **ZAKLAD** — karty grup (status, prąd, SU, płyny...). Dotknij grupy → szczegóły w sekcjach. Dotknij pozycji → **wykres** (10 min albo 2 h) i próg alarmu tej pozycji.
 
-Zapisywane na dysku komputera SCADA (przetrwają restart i UPDATE): progi alarmów, temat ntfy, historia wykresów 2 h (plik `scada_hist`, zapis co 5 min). Nie są zapisywane: lista alarmów, dziennik zdarzeń, ustawienia startu żółwi.
+Wszystko zapisuje się na dysku komputera SCADA i przetrwa restart oraz UPDATE: progi alarmów i temat ntfy (`settings`), historia wykresów 10 min i 2 h (`scada_hist`, co minutę), alarmy z potwierdzeniami, dziennik zdarzeń i parametry startu żółwi (`scada_state`, co 30 s i po każdym dotknięciu). Przez pierwsze 20 s po starcie SCADA czeka na dane i nie przelicza alarmów.
 
 `scada demo` pokazuje przykładowe dane bez żółwi i czujników.
 
