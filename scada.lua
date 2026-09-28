@@ -20,8 +20,17 @@ local LOW_FUEL = 500
 
 local LAVA        = "minecraft:lava"
 local LAVA_BUCKET = "minecraft:lava_bucket"
-local LAVA_MAX    = 64000   -- mB: pelny pasek (np. 4 zbiorniki po 16 wiader)
-local LAVA_LOW    = 8000    -- mB: ponizej tego alarm (czerwona zakladka)
+-- Pojemnosc i prog alarmu (mB) ustawia sie dotykiem w zakladce LAWA -> USTAW;
+-- zapisywane w ustawieniach komputera (settings), wiec przetrwaja restart.
+-- Create: 1 blok zbiornika = 8 wiader (8000 mB).
+local lavaMax = settings.get("scada.lava_max", 64000)
+local lavaLow = settings.get("scada.lava_low", 8000)
+
+local function saveLavaSettings()
+  settings.set("scada.lava_max", lavaMax)
+  settings.set("scada.lava_low", lavaLow)
+  settings.save()
+end
 local HISTORY_MAX = 120     -- probek historii (120 x 5 s = 10 min)
 
 local DEMO = ({ ... })[1] == "demo"
@@ -238,7 +247,7 @@ local function drawTabs()
     button(x, 1, label, bg, function() view = name end, active and colors.black or colors.white)
   end
   tab(9, " ZOLWIE ", "list")
-  tab(18, " LAWA ", "lava", #lava.history > 0 and lava.total < LAVA_LOW)
+  tab(18, " LAWA ", "lava", #lava.history > 0 and lava.total < lavaLow)
 
   if DEMO then put(25, 1, "[DEMO]", colors.yellow, colors.blue) end
   local clock = textutils.formatTime(os.time(), true)
@@ -305,14 +314,21 @@ local function drawList()
   drawFooter(("Online: %d/%d | dotknij zolwia = ustawienia"):format(online, #ids))
 end
 
--- Wiersz z wartoscia liczbowa i przyciskami -10 -1 +1 +10
-local function numberRow(y, label, value, set, bigStep)
+-- Wiersz z wartoscia liczbowa i przyciskami -duzy -maly wartosc +maly +duzy
+local function numberRow(y, label, value, set, bigStep, smallStep)
+  smallStep = smallStep or 1
   put(2, y, label, colors.lightGray, colors.black)
-  button(10, y, " -" .. bigStep .. " ", colors.red, function() set(value - bigStep) end)
-  button(16, y, " -1 ", colors.red, function() set(value - 1) end)
-  put(21, y, ("%4d"):format(value), colors.white, colors.black)
-  button(26, y, " +1 ", colors.green, function() set(value + 1) end)
-  button(31, y, " +" .. bigStep .. " ", colors.green, function() set(value + bigStep) end)
+  local x = 10
+  local function btn(txt, col, v)
+    button(x, y, " " .. txt .. " ", col, function() set(v) end)
+    x = x + #txt + 3
+  end
+  btn("-" .. bigStep, colors.red, value - bigStep)
+  btn("-" .. smallStep, colors.red, value - smallStep)
+  put(x, y, ("%5d"):format(value), colors.white, colors.black)
+  x = x + 6
+  btn("+" .. smallStep, colors.green, value + smallStep)
+  btn("+" .. bigStep, colors.green, value + bigStep)
 end
 
 local function toggle(x, y, label, active, action)
@@ -377,11 +393,11 @@ end
 local function drawLava()
   drawTabs()
   local total = lava.total
-  local low = #lava.history > 0 and total < LAVA_LOW
+  local low = #lava.history > 0 and total < lavaLow
 
   -- Podsumowanie i trend
   put(2, 3, "Zapas:", colors.lightGray, colors.black)
-  put(9, 3, ("%s / %s"):format(buckets(total), buckets(LAVA_MAX)),
+  put(9, 3, ("%s / %s"):format(buckets(total), buckets(lavaMax)),
       low and colors.red or colors.orange, colors.black)
   local rate = lavaRate()
   local rateTxt = ("%+.1f B/min"):format(rate / 1000)
@@ -390,9 +406,11 @@ local function drawLava()
 
   -- Pasek wypelnienia
   local barW = w - 2
-  local filled = math.floor(barW * clamp(total / LAVA_MAX, 0, 1) + 0.5)
+  local filled = math.floor(barW * clamp(total / lavaMax, 0, 1) + 0.5)
   put(2, 4, (" "):rep(filled), nil, low and colors.red or colors.orange)
   put(2 + filled, 4, (" "):rep(barW - filled), nil, colors.gray)
+
+  button(w - 7, 5, " USTAW ", colors.blue, function() view = "lavacfg" end)
 
   -- Zrodla (max 4 wiersze)
   fillRow(6, colors.gray)
@@ -421,22 +439,57 @@ local function drawLava()
         colors.lightGray, colors.black)
     local gh, gw = gBot - gTop + 1, w - 2
     local hist = lava.history
-    local maxV = LAVA_MAX
+    local maxV = lavaMax
     for _, s in ipairs(hist) do maxV = math.max(maxV, s.v) end
     local start = math.max(1, #hist - gw + 1)
     for i = start, #hist do
       local x = 2 + gw - 1 - (#hist - i)
       local bh = math.floor(gh * hist[i].v / maxV + 0.5)
-      local col = hist[i].v < LAVA_LOW and colors.red or colors.orange
+      local col = hist[i].v < lavaLow and colors.red or colors.orange
       for r = 0, bh - 1 do put(x, gBot - r, " ", nil, col) end
     end
   end
 
   if low then
-    drawFooter(("ALARM: malo lawy (< %s)"):format(buckets(LAVA_LOW)), colors.red)
+    drawFooter(("ALARM: malo lawy (< %s)"):format(buckets(lavaLow)), colors.red)
+  elseif total > lavaMax then
+    drawFooter("Zapas > pojemnosc - popraw w USTAW", colors.yellow)
   else
     drawFooter(("Zrodel: %d | probka co %d s"):format(#lava.sources, REFRESH))
   end
+end
+
+-- Ustawienia lawy: pojemnosc i prog alarmu (w wiadrach), zapis od razu
+local function drawLavaCfg()
+  drawHeader("Ustawienia lawy")
+
+  local maxB, lowB = math.floor(lavaMax / 1000), math.floor(lavaLow / 1000)
+
+  put(2, 3, "Pojemnosc calkowita (wiadra):", colors.lightGray, colors.black)
+  numberRow(4, "Max", maxB, function(v)
+    lavaMax = clamp(v, 1, 99999) * 1000
+    saveLavaSettings()
+  end, 64, 8)
+  put(2, 5, "Create: 8 B = 1 blok zbiornika", colors.gray, colors.black)
+
+  put(2, 7, "Alarm ponizej (wiadra):", colors.lightGray, colors.black)
+  numberRow(8, "Alarm", lowB, function(v)
+    lavaLow = clamp(v, 0, 99999) * 1000
+    saveLavaSettings()
+  end, 10, 1)
+
+  button(2, 10, " = TERAZ ", colors.orange, function()
+    -- pojemnosc = obecny zapas zaokraglony w gore do pelnego bloku Create
+    lavaMax = math.max(8000, math.ceil(lava.total / 8000) * 8000)
+    saveLavaSettings()
+  end, colors.black)
+  put(12, 10, "max = obecny zapas", colors.gray, colors.black)
+
+  put(2, 12, ("Teraz: %s"):format(buckets(lava.total)), colors.orange, colors.black)
+
+  button(2, 14, " WSTECZ ", colors.gray, function() view = "lava" end)
+
+  drawFooter("Zmiany zapisuja sie od razu")
 end
 
 local function draw()
@@ -453,6 +506,7 @@ local function draw()
 
   if view == "config" and selected then drawConfig()
   elseif view == "lava" then drawLava()
+  elseif view == "lavacfg" then drawLavaCfg()
   else drawList() end
 end
 
