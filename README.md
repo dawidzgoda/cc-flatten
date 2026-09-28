@@ -1,100 +1,110 @@
 # cc-flatten
 
-Programy dla CC: Tweaked (Minecraft) do wyrównywania terenu i stawiania pochodni żółwiem, sterowane zdalnie z pocket computera.
+Programy dla CC: Tweaked (Minecraft): żółwie do wyrównywania terenu i stawiania pochodni oraz SCADA do monitorowania zakładu (Create, prąd FE, płyny, magazyn, pociągi) z alarmami.
 
 | Plik | Gdzie | Opis |
 |---|---|---|
-| `flatten.lua` | żółw (zapisz jako `flatten`) | wyrównuje obszar: ścina wzniesienia, zasypuje dziury |
-| `torches.lua` | żółw (zapisz jako `torches`) | stawia pochodnie w siatce co N kratek |
-| `listener.lua` | żółw (zapisz jako `startup`) | czeka na polecenia z pilota przez rednet |
-| `remote.lua` | pocket computer (zapisz jako `remote`) | pilot: wybór ID żółwia, wymiary, start zdalny |
-| `scada.lua` | komputer z advanced monitorem (zapisz jako `scada`) | panel stanu żółwi + dotykowe uruchamianie programów; zakładka LAWA (zapas ze zbiorników i skrzyń, trend, wykres); `scada demo` = dane testowe |
-| `lavasensor.lua` | komputer przy zbiornikach (zapisz jako `lavasensor`) | czujnik lawy: wysyła zapas bezprzewodowo do SCADA; `lavasensor install` = autostart |
-| `energysensor.lua` | komputer przy magazynach FE (zapisz jako `energysensor`) | czujnik prądu (np. Powah): wysyła stan FE do SCADA; `energysensor install` = autostart |
-| `pscada.lua` | pocket computer (zapisz jako `pscada`) | mini SCADA: żółwie, lawa, prąd na ekranie pocketa; `pscada demo` = dane testowe |
-| `autostart.lua` | zwykły komputer (zapisz jako `autostart`) | autostart SCADA i czujników z auto-restartem |
-| `mkdisk.lua` | komputer ze stacją dysków (zapisz jako `mkdisk`) | nagrywa dyskietkę instalacyjną |
-| `installer.lua` | dyskietka (jako `startup.lua`) | instalator offline dla żółwi i komputerów |
-| `update.lua` | wszędzie (zapisz jako `update`) | pobiera najnowsze wersje odpowiednich plików |
+| `flatten.lua` | żółw (`flatten`) | wyrównuje obszar: ścina wzniesienia, zasypuje dziury |
+| `torches.lua` | żółw (`torches`) | stawia pochodnie w siatce, także w górach |
+| `listener.lua` | żółw (`startup`) | odbiera polecenia z pilota/SCADA przez rednet |
+| `remote.lua` | pocket (`remote`) | pilot: ID żółwia, program, wymiary, start |
+| `pscada.lua` | pocket (`pscada`) | mini SCADA: żółwie, grupy zakładu, alarmy |
+| `scada.lua` | komputer + advanced monitor (`scada`) | panel: alarmy, żółwie, zakład w grupach |
+| `sensor.lua` | komputer przy maszynach (`sensor`) | czujnik: sam wykrywa i wysyła dane do SCADA |
+| `lavasensor.lua`, `energysensor.lua` | – | stare nazwy, aliasy do `sensor` |
+| `autostart.lua` | komputer (`autostart`) | autostart programów z auto-restartem |
+| `mkdisk.lua` | komputer ze stacją dysków (`mkdisk`) | nagrywa dyskietkę instalacyjną |
+| `diskstation.lua` | komputer ze stacją dysków (`diskstation`) | automatyczna stacja nagrywania dyskietek (nie trafia na dyskietki) |
+| `installer.lua` | dyskietka (`startup.lua`) | instalator offline dla żółwi i komputerów |
+| `update.lua` | wszędzie (`update`) | pobiera najnowsze wersje odpowiednich plików |
 
 ## Instalacja
 
-Na żółwiu i na pocket computerze wpisz:
+Przez internet, na dowolnym urządzeniu:
 
 ```
 wget https://raw.githubusercontent.com/dawidzgoda/cc-flatten/main/update.lua update
 update
 ```
 
-`update` sam rozpozna, czy działa na żółwiu (pobierze `flatten`, `torches` i `startup`), czy na pilocie (pobierze `remote`).
-Na żółwiu po aktualizacji wpisz `reboot`. Później do aktualizacji wystarczy samo `update`.
-
-## Wymagania
-
-- Mining turtle z wireless/ender modemem
-- Pocket computer z wireless/ender modemem
-- Węgiel oraz trochę ziemi/cobble (flatten) lub pochodnie (torches) w ekwipunku żółwia
-
-## Użycie
-
-Ręcznie na żółwiu:
+`update` sam rozpozna urządzenie (żółw / pocket / komputer) i pobierze właściwe programy. Potem na komputerze ustaw autostart:
 
 ```
-flatten <dlugosc> <szerokosc> [maxWGore=32] [maxWDol=8] [-c]
-```
-
-- bez `-c`: żółw stoi w lewym-tylnym rogu, obszar idzie do przodu i w prawo
-- z `-c`: żółw stoi na środku obszaru
-
-```
-torches <dlugosc> <szerokosc> [odstep=5] [-c]
-```
-
-Żółw leci nad terenem (przed zboczem się wznosi, nie kopie), w miejscu pochodni opada do gruntu i ją stawia. Działa na płaskim i górzystym terenie; pomija wodę/lawę, pnie drzew i przepaści.
-
-Zdalnie: na pocket computerze uruchom `remote`, podaj ID żółwia, wybierz program i wymiary.
-
-Żółw stoi **na docelowym poziomie** — blok pod nim to przyszła powierzchnia.
-
-## Alarmy
-
-SCADA sama pilnuje stanu i podnosi alarmy:
-
-| Alarm | Poziom |
-|---|---|
-| mało lawy (poniżej progu z USTAW) | ALARM |
-| mało prądu (poniżej 20%) | ALARM |
-| żółw czeka: brak paliwa / bloków / pochodni | ALARM |
-| żółw przerwał pracę (błąd) | ALARM (do potwierdzenia) |
-| żółw offline, mało paliwa, czujnik offline | uwaga |
-
-- Zakładka **ALM** na monitorze (pierwsza z lewej): lista alarmów, dotknięcie = potwierdzenie, dziennik zdarzeń.
-- **Pocket** (`pscada`, klawisz 4): te same alarmy, potwierdzanie zdalne.
-- **Syrena**: speaker podłączony do komputera SCADA gra, dopóki alarm krytyczny nie zostanie potwierdzony.
-- **Prawdziwy telefon** (opcjonalnie): zainstaluj aplikację **ntfy**, zasubskrybuj swój tajny temat i na komputerze SCADA wpisz `set scada.ntfy <temat>`.
-
-## Autostart i aktualizacja
-
-Na zwykłym komputerze (SCADA, czujniki):
-
-```
-scada install          # albo: lavasensor install / energysensor install
+scada install        # komputer z monitorem
+sensor install       # komputer z czujnikiem
 reboot
 ```
 
-`autostart list` pokazuje, co startuje, a `autostart remove <program>` usuwa program z autostartu. Kilka programów może działać razem na jednym komputerze. Program, który się wywali, uruchamia się ponownie po 5 s.
+Bez internetu: dyskietka instalacyjna (niżej).
 
-**Przycisk UPDATE** (zakładka ALM na monitorze SCADA, trzeba go dotknąć dwa razy) wysyła polecenie aktualizacji do wszystkich żółwi i czujników, a potem aktualizuje i restartuje samą SCADA. Żółwie, które akurat pracują, są pomijane. Pockety aktualizujesz ręcznie przez `update`.
+## Żółwie
+
+```
+flatten <dlugosc> <szerokosc> [maxWGore=32] [maxWDol=8] [-c]
+torches <dlugosc> <szerokosc> [odstep=5] [-c]
+```
+
+- bez `-c`: żółw stoi w lewym-tylnym rogu, obszar idzie do przodu i w prawo; z `-c`: na środku,
+- `flatten`: żółw stoi **na docelowym poziomie** (blok pod nim = przyszła powierzchnia),
+- `torches`: leci nad terenem (przed zboczem się wznosi, nie kopie), w miejscu pochodni opada do gruntu; pomija wodę/lawę, pnie drzew i przepaści.
+
+Zdalnie: `remote` na pockecie albo zakładka **ZOLWIE** na SCADA.
+
+## Czujnik (`sensor`)
+
+Jeden komputer z czujnikiem = jedna **grupa** na SCADA. Nazwa grupy to etykieta komputera (`label set Kopalnia`). Czujnik sam wykrywa podłączone urządzenia (obok komputera albo przez wired modem + kabel):
+
+| Sekcja | Urządzenia | Dane |
+|---|---|---|
+| PRAD | magazyny FE (Powah, Thermal, ...) | energia, pojemność, bilans FE/t |
+| KINETYKA | Create Stressometer, Speedometer | obciążenie SU, RPM |
+| PLYNY | Create Fluid Tank i inne zbiorniki | wszystkie płyny (lawa, woda, ...) |
+| MAGAZYN | skrzynie, Create Item Vault, Stock Ticker | ilości przedmiotów |
+| POCIAGI | Create Train Station, Train Signal | pociąg na stacji, stan sygnału |
+
+`sensor test` wypisuje, co czujnik widzi (diagnostyka).
+
+## SCADA
+
+Zakładki na monitorze (dotyk):
+
+- **ALM** — alarmy, dziennik zdarzeń, przycisk **UPDATE**,
+- **ZOLWIE** — stan żółwi; dotknij żółwia → program i parametry → START,
+- **ZAKLAD** — karty grup (status, prąd, SU, płyny...). Dotknij grupy → szczegóły w sekcjach. Dotknij pozycji → próg alarmu dla tej pozycji (zapisywany na komputerze).
+
+`scada demo` pokazuje przykładowe dane bez żółwi i czujników.
+
+## Alarmy
+
+| Alarm | Poziom | Próg (domyślnie) |
+|---|---|---|
+| mało prądu w grupie | ALARM | < 20% |
+| przeciążenie sieci Create (SU > pojemność) | ALARM | zawsze |
+| wysokie obciążenie SU | uwaga | ≥ 90% |
+| mało płynu (np. lawy) | ALARM | ustawiasz dotykiem (domyślnie wył.) |
+| mało przedmiotu w magazynie | uwaga | ustawiasz dotykiem (domyślnie wył.) |
+| za niskie RPM | uwaga | ustawiasz dotykiem (domyślnie wył.) |
+| żółw czeka: brak paliwa / bloków / pochodni | ALARM | – |
+| żółw przerwał pracę (błąd) | ALARM (do potwierdzenia) | – |
+| żółw lub czujnik offline, mało paliwa | uwaga | – |
+
+- **Pocket** (`pscada`, klawisz 3): te same alarmy, potwierdzanie zdalne.
+- **Syrena**: speaker podłączony do komputera SCADA gra, dopóki alarm krytyczny nie zostanie potwierdzony.
+- **Prawdziwy telefon** (opcjonalnie): aplikacja **ntfy**, zasubskrybuj swój tajny temat i na komputerze SCADA wpisz `set scada.ntfy <temat>`.
+
+## Autostart i aktualizacja
+
+`autostart list` pokazuje, co startuje; `autostart add|remove <program>` (scada, sensor, diskstation). Kilka programów może działać razem na jednym komputerze; program, który się wywali, uruchamia się ponownie po 5 s.
+
+**Przycisk UPDATE** (zakładka ALM, dotknąć dwa razy) aktualizuje zdalnie wszystkie żółwie i czujniki, a potem samą SCADA z restartem. Pracujące żółwie są pomijane. Pockety aktualizujesz ręcznie (`update`).
 
 ## Dyskietka instalacyjna
 
-Instalacja bez internetu na żółwiach i komputerach:
+1. **Nagranie**: komputer z internetem + stacja dysków + dyskietka → `mkdisk`.
+   Albo **stacja dyskietek**: `diskstation install` + `reboot` — potem każda włożona pusta dyskietka (albo stary instalator) jest sama nagrywana najnowszą wersją i wysuwana. Inne dyskietki są pomijane.
+2. **Instalacja**: stacja z dyskietką obok żółwia/komputera + restart (Ctrl+R). Instalator:
+   - **żółw**: kopiuje programy, pyta o nazwę,
+   - **komputer**: rola (1 SCADA, 2 czujnik, 3 SCADA + czujnik), nazwa, autostart.
+3. Na koniec wysuwa dyskietkę i restartuje urządzenie.
 
-1. Na komputerze z internetem podłącz **stację dysków** (disk drive), włóż dyskietkę i wpisz `mkdisk`. Program pobierze wszystkie programy na dyskietkę i doda instalator.
-2. Postaw stację z dyskietką obok żółwia lub komputera i zrestartuj urządzenie (przytrzymaj Ctrl+R albo wpisz `reboot`).
-3. Instalator uruchomi się sam:
-   - **żółw**: kopiuje `flatten`, `torches`, `startup` (listener) i `update`, pyta o nazwę,
-   - **komputer**: pytasz o rolę (SCADA, czujnik lawy, czujnik prądu, oba czujniki, wszystko naraz), a instalator ustawia autostart i pyta o nazwę.
-4. Na koniec wysuwa dyskietkę i restartuje urządzenie. Dyskietkę podnosisz i używasz przy następnym.
-
-Jeśli urządzenie ma już oprogramowanie, instalator czeka 10 s na Enter (ponowna instalacja), a potem uruchamia normalny start.
+Jeśli urządzenie ma już oprogramowanie, instalator czeka 10 s na Enter (ponowna instalacja), a potem uruchamia normalny start. Stacja dyskietek (`diskstation`, `mkdisk`) nie jest instalowana z dyskietki.

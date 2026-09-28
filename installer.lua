@@ -22,14 +22,13 @@ for _, n in ipairs(peripheral.getNames()) do
 end
 
 -- Programy zwyklego komputera, ktore moga byc w autostarcie
-local AUTOSTART = { "scada", "lavasensor", "energysensor" }
+-- (diskstation celowo pomijamy - nie jest instalowana z dyskietki)
+local AUTOSTART = { "scada", "sensor" }
 
 local ROLES = {
-  { key = keys.one,   name = "SCADA (monitor)",          start = { "scada" } },
-  { key = keys.two,   name = "Czujnik lawy",             start = { "lavasensor" } },
-  { key = keys.three, name = "Czujnik pradu",            start = { "energysensor" } },
-  { key = keys.four,  name = "Czujnik lawy + pradu",     start = { "lavasensor", "energysensor" } },
-  { key = keys.five,  name = "SCADA + oba czujniki",     start = { "scada", "lavasensor", "energysensor" } },
+  { key = keys.one,   name = "SCADA (monitor)",            start = { "scada" } },
+  { key = keys.two,   name = "Czujnik (Create, FE, ...)",  start = { "sensor" } },
+  { key = keys.three, name = "SCADA + czujnik",            start = { "scada", "sensor" } },
 }
 
 ---------------------------------------------------------------------------
@@ -139,7 +138,7 @@ end
 
 term.clear(); term.setCursorPos(1, 1)
 print("Instalacja: " .. role.name)
-for _, n in ipairs({ "scada", "lavasensor", "energysensor", "autostart", "remote", "update" }) do
+for _, n in ipairs({ "scada", "sensor", "autostart", "remote", "update" }) do
   copy(n, n)
 end
 
@@ -148,6 +147,10 @@ for _, n in ipairs(AUTOSTART) do shell.run("autostart", "remove", n) end
 for _, n in ipairs(role.start) do shell.run("autostart", "add", n) end
 
 print()
+if role.start[1] == "sensor" or role.start[2] == "sensor" then
+  print("Nazwa = nazwa GRUPY na SCADA (np. miejsce:")
+  print("'Wyspa Glowna', 'Kopalnia', 'Huta').")
+end
 local defaultName = role.start[1] == "scada" and "SCADA" or ("Czujnik_" .. os.getComputerID())
 askLabel(defaultName)
 finish()

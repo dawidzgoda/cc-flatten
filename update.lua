@@ -1,8 +1,8 @@
 -- update.lua - pobiera najnowsze wersje programow z GitHuba
 -- Na zolwiu: flatten, torches, startup (listener), update
 -- Na pocket computerze: remote, pscada, update
--- Na zwyklym komputerze: scada, lavasensor, energysensor, autostart, mkdisk,
---                        remote, update
+-- Na zwyklym komputerze: scada, sensor (+ stare nazwy lavasensor/energysensor),
+--                        autostart, mkdisk, diskstation, remote, update
 
 local BASE = "https://raw.githubusercontent.com/dawidzgoda/cc-flatten/main/"
 
@@ -21,15 +21,17 @@ elseif pocket then
     { "update.lua", "update" },
   }
 else
-  -- zwykly komputer: panel SCADA, czujnik lawy, pilot
+  -- zwykly komputer: SCADA, czujnik, stacja dyskietek, pilot
   files = {
-    { "scada.lua",      "scada" },
-    { "lavasensor.lua", "lavasensor" },
-    { "energysensor.lua", "energysensor" },
-    { "autostart.lua",  "autostart" },
-    { "mkdisk.lua",     "mkdisk" },
-    { "remote.lua", "remote" },
-    { "update.lua", "update" },
+    { "scada.lua",        "scada" },
+    { "sensor.lua",       "sensor" },
+    { "lavasensor.lua",   "lavasensor" },     -- alias -> sensor
+    { "energysensor.lua", "energysensor" },   -- alias -> sensor
+    { "autostart.lua",    "autostart" },
+    { "mkdisk.lua",       "mkdisk" },
+    { "diskstation.lua",  "diskstation" },
+    { "remote.lua",       "remote" },
+    { "update.lua",       "update" },
   }
 end
 

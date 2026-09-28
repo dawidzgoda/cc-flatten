@@ -1,27 +1,23 @@
 -- pscada.lua - mini SCADA na (advanced) pocket computer
 --
--- Uzycie:  pscada        - dane z zolwi i czujnikow (lavasensor/energysensor)
+-- Uzycie:  pscada        - dane z zolwi, czujnikow (sensor) i alarmy ze SCADA
 --          pscada demo   - dane testowe
 --
--- Obsluga: dotknij zakladki u gory albo klawisze 1/2/3/4, Q - wyjscie.
---          ALM (4): lista alarmow ze SCADA; dotknij alarmu = potwierdz,
---          A = potwierdz wszystkie. Alarmy wymagaja dzialajacej SCADA.
--- Pojemnosc lawy do paska (mB):  set scada.lava_max 720000
--- Prog alarmu lawy (mB):         set scada.lava_low 50000
+-- Obsluga: dotknij zakladki u gory albo klawisze 1/2/3, Q - wyjscie.
+--   1 ZOLW - stan zolwi
+--   2 ZAKL - grupy z czujnikow (prad, SU, plyny, magazyn);
+--            przewijanie: strzalki gora/dol albo kolko myszy
+--   3 ALM  - alarmy ze SCADA; dotknij alarmu = potwierdz, A = wszystkie.
+--            Alarmy i progi liczy duza SCADA - musi dzialac.
 
 local PROTOCOL        = "flatten"
-local LAVA_PROTOCOL   = "scada_lava"
-local ENERGY_PROTOCOL = "scada_energy"
+local SENSOR_PROTOCOL = "scada_sensor"
 local ALARM_PROTOCOL  = "scada_alarm"
 local REFRESH         = 5
 local OFFLINE         = 15
-local ENERGY_LOW_PCT  = 20
 local LOW_FUEL        = 500
 
 local DEMO = ({ ... })[1] == "demo"
-
-local lavaMax = settings.get("scada.lava_max", 64000)
-local lavaLow = settings.get("scada.lava_low", 8000)
 
 if not DEMO then
   local modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
@@ -35,10 +31,18 @@ local function c(col, fallback) return color and col or (fallback or colors.whit
 local function now() return os.epoch("utc") end
 local function isOnline(e) return e ~= nil and (now() - e.last) < OFFLINE * 1000 end
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
+local function shortName(n) return (tostring(n):match(":(.+)$") or tostring(n)) end
 
-local turtles, lavaSensors, energySensors = {}, {}, {}
-local lavaHist, energyHist = {}, {}
-local view = "turtles"
+local function fmtNum(n)
+  if math.abs(n) >= 1e6 then return ("%.1fM"):format(n / 1e6) end
+  if math.abs(n) >= 1e4 then return ("%.1fk"):format(n / 1e3) end
+  return tostring(math.floor(n))
+end
+
+local turtles = {}
+local groups  = {}            -- nazwa -> { last, sum }
+local view    = "turtles"
+local plantScroll = 0
 
 -- Alarmy ze SCADA
 local alarmList, scadaId, lastSync = {}, nil, 0
@@ -46,9 +50,11 @@ local seenAlarms = {}        -- klucze juz widzianych alarmow
 local newAlarmUntil = 0      -- do kiedy pokazywac "NOWY ALARM"
 local alarmRows = {}         -- wiersz ekranu -> klucz alarmu
 
-local function unackedCount()
+local function unackedCount(onlyGroups)
   local n = 0
-  for _, a in ipairs(alarmList) do if not a.acked then n = n + 1 end end
+  for _, a in ipairs(alarmList) do
+    if not a.acked and (not onlyGroups or a.group) then n = n + 1 end
+  end
   return n
 end
 
@@ -78,39 +84,33 @@ local function sendAck(key)
 end
 
 ---------------------------------------------------------------------------
--- Dane
+-- Dane z czujnikow: krotkie podsumowanie grupy
 
--- Zwraca sumy oraz liczbe aktywnych czujnikow lawy (do sprawdzania zestawu)
-local function totals()
-  local lava, en, cap, lavaN = 0, 0, 0, 0
-  for _, s in pairs(lavaSensors) do
-    if isOnline(s) then lava, lavaN = lava + s.total, lavaN + 1 end
+local function summarize(points)
+  local s = { energy = 0, energyCap = 0, suMax = nil, fluids = {}, fluidList = {},
+              itemTypes = 0, itemSources = 0, stations = 0 }
+  for _, pt in ipairs(points or {}) do
+    if pt.kind == "energy" then
+      s.energy, s.energyCap = s.energy + pt.energy, s.energyCap + pt.capacity
+    elseif pt.kind == "stress" and pt.capacity > 0 then
+      s.suMax = math.max(s.suMax or 0, pt.stress / pt.capacity * 100)
+    elseif pt.kind == "fluid" then
+      for _, f in ipairs(pt.fluids or {}) do s.fluids[f.name] = (s.fluids[f.name] or 0) + f.amount end
+    elseif pt.kind == "items" then
+      s.itemSources = pt.sources or 0
+      for _ in pairs(pt.items or {}) do s.itemTypes = s.itemTypes + 1 end
+    elseif pt.kind == "station" then
+      s.stations = s.stations + 1
+    end
   end
-  for _, s in pairs(energySensors) do
-    if isOnline(s) then en, cap = en + s.energy, cap + s.capacity end
-  end
-  return lava, en, cap, lavaN
+  for name, amount in pairs(s.fluids) do s.fluidList[#s.fluidList + 1] = { name = name, amount = amount } end
+  table.sort(s.fluidList, function(a, b) return a.amount > b.amount end)
+  return s
 end
 
--- sig = zestaw zrodel; bilans liczymy tylko z probek o tym samym zestawie
-local function pushHist(hist, v, sig)
-  hist[#hist + 1] = { t = now(), v = v, sig = sig }
-  if #hist > 24 then table.remove(hist, 1) end   -- 2 min historii
-end
-
--- Zmiana na minute. Pomija probki sprzed zmiany zestawu czujnikow - inaczej
--- start programu (zanim dojda dane, zapas = 0) dawalby ogromny, falszywy bilans.
-local function ratePerMin(hist)
-  if #hist < 2 then return 0 end
-  local b, a = hist[#hist], nil
-  for i = #hist - 1, 1, -1 do
-    if hist[i].sig ~= b.sig then break end
-    a = hist[i]
-    if b.t - a.t >= 60000 then break end   -- ostatnia minuta, jak w SCADA
-  end
-  if not a then return 0 end
-  local dt = (b.t - a.t) / 60000
-  return dt > 0 and (b.v - a.v) / dt or 0
+local function receiveSensor(id, msg)
+  local key = tostring(msg.label or ("#" .. id))
+  groups[key] = { last = now(), sum = summarize(msg.points) }
 end
 
 local function demoTick()
@@ -119,16 +119,25 @@ local function demoTick()
                                         progress = (t / 60) % 1, fuel = 4200 } }
   turtles[7] = { last = now(), data = { state = "idle", fuel = 320 } }
   turtles[21] = turtles[21] or { last = now() - 60000, data = { state = "idle", fuel = 0 } }
-  lavaSensors[5] = { last = now(), label = "Zbiorniki", total = math.floor(400000 + 200000 * math.sin(t / 20)) }
-  energySensors[6] = { last = now(), label = "Prad", capacity = 70e6,
-                       energy = math.floor(35e6 + 30e6 * math.sin(t / 30)) }
+  receiveSensor(9001, { label = "Wyspa Glowna", points = {
+    { kind = "energy", energy = math.floor(35e6 + 30e6 * math.sin(t / 30)), capacity = 70e6 },
+    { kind = "stress", stress = 1500, capacity = 2048 },
+    { kind = "fluid", fluids = { { name = "minecraft:lava", amount = math.floor(400000 + 200000 * math.sin(t / 20)) } } },
+    { kind = "fluid", fluids = { { name = "minecraft:water", amount = 512000 } } },
+    { kind = "items", sources = 3, items = { a = 1, b = 2, c = 3 } },
+    { kind = "station" },
+  } })
+  receiveSensor(9002, { label = "Kopalnia", points = {
+    { kind = "energy", energy = 1.5e6, capacity = 10e6 },
+    { kind = "stress", stress = 4100, capacity = 4096 },
+  } })
   if #alarmList == 0 then
     setAlarms({
-      { key = "t_wait_3", text = "Zolw #3 Kopacz: brak paliwa", crit = true,
+      { key = "g_su_Kopalnia", text = "[Kopalnia] PRZECIAZENIE sieci", crit = true, group = "Kopalnia",
         since = now(), active = true, acked = false },
       { key = "t_off_21", text = "Zolw #21 offline", crit = false,
         since = now() - 300000, active = true, acked = true },
-      { key = "t_fuel_7", text = "Zolw #7: malo paliwa (320)", crit = false,
+      { key = "g_en_Kopalnia", text = "[Kopalnia] malo pradu: 15%", crit = true, group = "Kopalnia",
         since = now() - 600000, active = false, acked = false },
     })
   end
@@ -154,52 +163,40 @@ local function fit(s, n)
   return s .. (" "):rep(n - #s)
 end
 
-local function bar(y, p, col)
-  local bw = w - 6
-  local f = math.floor(bw * clamp(p, 0, 1) + 0.5)
-  put(2, y, (" "):rep(f), nil, c(col, colors.white))
-  put(2 + f, y, (" "):rep(bw - f), nil, c(colors.gray, colors.black))
-  put(w - 4, y, ("%3d%%"):format(math.floor(p * 100 + 0.5)), colors.white, colors.black)
-end
-
-local function fmtFE(n)
-  local units = { "", "k", "M", "G", "T" }
-  local i = 1
-  while math.abs(n) >= 1000 and i < #units do n = n / 1000; i = i + 1 end
-  return ("%.1f%sFE"):format(n, units[i])
-end
-
 local function sortedIds(t)
   local ids = {}
   for id in pairs(t) do ids[#ids + 1] = id end
-  table.sort(ids)
+  table.sort(ids, function(a, b)
+    if type(a) == "number" and type(b) == "number" then return a < b end
+    return tostring(a) < tostring(b)
+  end)
   return ids
 end
 
 local TABS = {
   { x = 1,  label = " ZOLW ", view = "turtles" },
-  { x = 7,  label = " LAWA ", view = "lava" },
-  { x = 13, label = " PRAD ", view = "energy" },
-  { x = 19, label = " ALM ",  view = "alarms" },
+  { x = 7,  label = " ZAKL ", view = "plant" },
+  { x = 13, label = " ALM ",  view = "alarms" },
 }
 
-local function drawTabs(lava, en, cap)
+local function drawTabs()
   fillRow(1, c(colors.blue, colors.black))
-  local unacked = unackedCount()
   local alarm = {
-    lava = #lavaHist > 0 and next(lavaSensors) ~= nil and lava < lavaLow,
-    energy = cap > 0 and en / cap * 100 < ENERGY_LOW_PCT,
-    alarms = unacked > 0,
+    turtles = false,
+    plant = unackedCount(true) > 0,
+    alarms = unackedCount() > 0,
   }
+  for _, a in ipairs(alarmList) do
+    if not a.acked and not a.group and a.active then alarm.turtles = true end
+  end
   for _, t in ipairs(TABS) do
     local active = view == t.view
     local bg = active and c(colors.lightBlue, colors.white)
             or (alarm[t.view] and c(colors.red) or c(colors.gray, colors.black))
     put(t.x, 1, t.label, active and colors.black or colors.white, bg)
   end
-  if unacked > 0 then
-    put(w - 2, 1, ("!%-2d"):format(math.min(unacked, 99)), c(colors.red), c(colors.blue, colors.black))
-  end
+  local clock = textutils.formatTime(os.time(), true)
+  put(w - #clock + 1, 1, clock, colors.white, c(colors.blue, colors.black))
 end
 
 local function drawTurtles()
@@ -234,64 +231,66 @@ local function drawTurtles()
   if y == 3 then put(1, 4, "Brak zolwi w zasiegu", c(colors.lightGray), colors.black) end
 end
 
-local function drawLava(lava)
-  local low = lava < lavaLow
-  put(1, 3, ("Zapas: %.1f B"):format(lava / 1000), low and c(colors.red) or c(colors.orange), colors.black)
-  local r = ratePerMin(lavaHist) / 1000
-  put(1, 4, ("Trend: %+.1f B/min"):format(r),
-      r < 0 and c(colors.red) or (r > 0 and c(colors.lime) or colors.white), colors.black)
-  bar(5, lava / lavaMax, low and colors.red or colors.orange)
-  put(1, 6, ("max %.0f B, alarm < %.0f B"):format(lavaMax / 1000, lavaLow / 1000),
-      c(colors.gray, colors.white), colors.black)
-
-  local y = 8
-  for _, id in ipairs(sortedIds(lavaSensors)) do
-    if y > h - 1 then break end
-    local s = lavaSensors[id]
-    put(1, y, fit(s.label or ("#" .. id), 14), colors.white, colors.black)
-    if isOnline(s) then
-      put(15, y, ("%10s"):format(("%.1f B"):format(s.total / 1000)), c(colors.orange), colors.black)
-    else
-      put(15, y, ("%10s"):format("OFFLINE"), c(colors.red), colors.black)
+-- Liczba alarmow grupy (z listy SCADA)
+local function groupAlarms(label)
+  local act, unacked = 0, 0
+  for _, a in ipairs(alarmList) do
+    if a.group == label then
+      if a.active then act = act + 1 end
+      if not a.acked then unacked = unacked + 1 end
     end
-    y = y + 1
   end
-  if y == 8 then put(1, 8, "Brak czujnikow lawy", c(colors.lightGray), colors.black) end
+  return act, unacked
 end
 
-local function drawEnergy(en, cap)
-  local p = cap > 0 and en / cap or 0
-  local col = p * 100 < ENERGY_LOW_PCT and colors.red or (p < 0.5 and colors.yellow or colors.lime)
-  put(1, 3, fmtFE(en) .. " / " .. fmtFE(cap), c(col), colors.black)
-  bar(4, p, col)
-  local r = ratePerMin(energyHist) / 1200     -- FE/min -> FE/t
-  put(1, 5, (r > 0 and "+" or "") .. fmtFE(r) .. "/t",
-      r < 0 and c(colors.red) or (r > 0 and c(colors.lime) or colors.white), colors.black)
-  if r ~= 0 and cap > 0 then
-    local mins = (r > 0 and (cap - en) / r or en / -r) / 1200
-    local txt = mins >= 600 and ">10 h" or
-                (mins >= 60 and ("%.1f h"):format(mins / 60) or ("%d min"):format(math.floor(mins)))
-    put(1, 6, (r > 0 and "Pelne za: " or "Puste za: ") .. txt,
-        r > 0 and c(colors.lightGray) or c(colors.orange), colors.black)
+-- ZAKL: karty grup; kazda grupa to kilka linii, calosc przewijana
+local function drawPlant()
+  local lines = {}
+  local function L(text, fg, bg) lines[#lines + 1] = { text = text, fg = fg, bg = bg } end
+
+  for _, label in ipairs(sortedIds(groups)) do
+    local g = groups[label]
+    local act, unacked = groupAlarms(label)
+    local status, scol
+    if not isOnline(g) then status, scol = "OFFLN", colors.red
+    elseif unacked > 0 then status, scol = "ALM" .. unacked, colors.red
+    elseif act > 0 then status, scol = "ALM" .. act, colors.orange
+    else status, scol = "OK", colors.lime end
+    L(fit(label, w - 6) .. ("%6s"):format(status), c(scol), c(colors.gray, colors.black))
+
+    if isOnline(g) then
+      local s = g.sum
+      local parts = {}
+      if s.energyCap > 0 then parts[#parts + 1] = ("FE %d%%"):format(math.floor(s.energy / s.energyCap * 100)) end
+      if s.suMax then parts[#parts + 1] = ("SU %d%%"):format(math.floor(s.suMax)) end
+      if #parts > 0 then
+        L(" " .. table.concat(parts, "  "),
+          (s.suMax and s.suMax > 100) and c(colors.red) or colors.white)
+      end
+      for i = 1, math.min(3, #s.fluidList) do
+        local f = s.fluidList[i]
+        L((" %-14s%9s"):format(shortName(f.name):sub(1, 14), ("%.1f B"):format(f.amount / 1000)), c(colors.cyan))
+      end
+      if s.itemSources > 0 or s.stations > 0 then
+        L((" magazyn %d poz.  stacje %d"):format(s.itemTypes, s.stations), c(colors.lightGray))
+      end
+    end
+  end
+  if #lines == 0 then
+    L("Brak czujnikow w zasiegu", c(colors.lightGray))
+    L("(sensor na komputerach)", c(colors.lightGray))
   end
 
-  local y = 8
-  for _, id in ipairs(sortedIds(energySensors)) do
-    if y > h - 1 then break end
-    local s = energySensors[id]
-    put(1, y, fit(s.label or ("#" .. id), 14), colors.white, colors.black)
-    if isOnline(s) then
-      local sp = s.capacity > 0 and math.floor(s.energy / s.capacity * 100 + 0.5) or 0
-      put(15, y, ("%10s"):format(sp .. "%"), c(colors.yellow), colors.black)
-    else
-      put(15, y, ("%10s"):format("OFFLINE"), c(colors.red), colors.black)
-    end
-    y = y + 1
+  local top, n = 2, h - 2
+  plantScroll = clamp(plantScroll, 0, math.max(0, #lines - n))
+  for i = 1, n do
+    local l = lines[plantScroll + i]
+    if not l then break end
+    put(1, top + i - 1, fit(l.text, w), l.fg or colors.white, l.bg or colors.black)
   end
-  if y == 8 then put(1, 8, "Brak czujnikow pradu", c(colors.lightGray), colors.black) end
 end
 
--- Lista alarmow: kazdy alarm zajmuje 2 wiersze (czas + tekst)
+-- ALM: kazdy alarm zajmuje 2 wiersze (czas + tekst)
 local function drawAlarms()
   alarmRows = {}
   if not DEMO and (not scadaId or now() - lastSync > OFFLINE * 1000) then
@@ -331,20 +330,18 @@ local function draw()
   w, h = term.getSize()
   term.setBackgroundColor(colors.black)
   term.clear()
-  local lava, en, cap = totals()
-  drawTabs(lava, en, cap)
+  drawTabs()
 
-  if view == "lava" then drawLava(lava)
-  elseif view == "energy" then drawEnergy(en, cap)
+  if view == "plant" then drawPlant()
   elseif view == "alarms" then drawAlarms()
   else drawTurtles() end
 
   if now() < newAlarmUntil then
     fillRow(h, c(colors.red, colors.white))
-    put(1, h, "!! NOWY ALARM - klawisz 4", colors.white, c(colors.red, colors.white))
+    put(1, h, "!! NOWY ALARM - klawisz 3", colors.white, c(colors.red, colors.white))
   else
     fillRow(h, c(colors.gray, colors.black))
-    put(1, h, DEMO and "DEMO | 1-4, Q-wyjscie" or "1-4 zakladki, Q-wyjscie",
+    put(1, h, DEMO and "DEMO | 1-3, Q-wyjscie" or "1-3 zakladki, Q-wyjscie",
         colors.white, c(colors.gray, colors.black))
   end
 end
@@ -359,11 +356,9 @@ local function receiver()
     if type(msg) == "table" then
       if proto == PROTOCOL and msg.cmd == "pong" then
         turtles[id] = { data = msg, last = now() }
-      elseif proto == LAVA_PROTOCOL and msg.cmd == "lava" then
-        lavaSensors[id] = { label = msg.label, total = tonumber(msg.total) or 0, last = now() }
-      elseif proto == ENERGY_PROTOCOL and msg.cmd == "energy" then
-        energySensors[id] = { label = msg.label, energy = tonumber(msg.energy) or 0,
-                              capacity = tonumber(msg.capacity) or 0, last = now() }
+      elseif proto == SENSOR_PROTOCOL and msg.cmd == "data" then
+        receiveSensor(id, msg)
+        if view == "plant" then draw() end
       elseif proto == ALARM_PROTOCOL and msg.cmd == "alarms" and type(msg.list) == "table" then
         scadaId, lastSync = id, now()
         local before = newAlarmUntil
@@ -378,9 +373,6 @@ local function pinger()
   while true do
     if DEMO then demoTick() else rednet.broadcast({ cmd = "ping" }, PROTOCOL) end
     sleep(1.5)
-    local lava, en, cap, lavaN = totals()
-    pushHist(lavaHist, lava, lavaN)
-    pushHist(energyHist, en, cap)
     draw()
     sleep(REFRESH - 1.5)
   end
@@ -399,11 +391,15 @@ local function ui()
       elseif alarmRows[y] then sendAck(alarmRows[y]) end
       newAlarmUntil = 0
       draw()
+    elseif ev == "mouse_scroll" and view == "plant" then
+      plantScroll = plantScroll + a
+      draw()
     elseif ev == "key" then
       if a == keys.one then view = "turtles"
-      elseif a == keys.two then view = "lava"
-      elseif a == keys.three then view = "energy"
-      elseif a == keys.four then view = "alarms"; newAlarmUntil = 0
+      elseif a == keys.two then view = "plant"
+      elseif a == keys.three then view = "alarms"; newAlarmUntil = 0
+      elseif a == keys.up and view == "plant" then plantScroll = plantScroll - 1
+      elseif a == keys.down and view == "plant" then plantScroll = plantScroll + 1
       elseif a == keys.a and view == "alarms" then sendAck(nil)
       elseif a == keys.q then return end
       draw()
@@ -411,6 +407,7 @@ local function ui()
   end
 end
 
+if DEMO then demoTick() end
 draw()
 parallel.waitForAny(receiver, pinger, ui)
 term.setBackgroundColor(colors.black)

@@ -4,16 +4,24 @@
 --          autostart remove <program>   - przestan uruchamiac
 --          autostart list               - pokaz, co startuje
 --
--- Obslugiwane programy: scada, lavasensor, energysensor.
+-- Obslugiwane programy: scada, sensor, diskstation.
+-- (stare nazwy lavasensor/energysensor zamieniane sa na sensor)
 -- Kilka programow dziala rownolegle; jesli ktorys sie wywali, restartuje
 -- sie po 5 s. Ctrl+T (dwa razy) zatrzymuje wszystko.
 
-local KNOWN = { "scada", "lavasensor", "energysensor" }
+local KNOWN  = { "scada", "sensor", "diskstation" }
+local LEGACY = { lavasensor = "sensor", energysensor = "sensor" }
 local FILE = "startup.lua"
 
-local function isKnown(n)
-  for _, k in ipairs(KNOWN) do if k == n then return true end end
-  return false
+local function normalize(n)
+  n = LEGACY[n] or n
+  for _, k in ipairs(KNOWN) do if k == n then return n end end
+  return nil
+end
+
+local function addUnique(list, n)
+  for _, x in ipairs(list) do if x == n then return end end
+  list[#list + 1] = n
 end
 
 -- Aktualna lista z startup.lua (naglowek "-- autostart:" albo stary "-- sensors:")
@@ -23,11 +31,14 @@ local function readList()
   local header = content:match("^%-%- autostart: ([^\n]*)") or content:match("^%-%- sensors: ([^\n]*)")
   local list = {}
   if header then
-    for n in header:gmatch("[^,]+") do if isKnown(n) then list[#list + 1] = n end end
+    for n in header:gmatch("[^,]+") do
+      local k = normalize(n)
+      if k then addUnique(list, k) end
+    end
   else
     -- stary format (np. shell.run("lavasensor")) - szukamy znanych nazw
-    for _, n in ipairs(KNOWN) do
-      if content:find('"' .. n .. '"', 1, true) then list[#list + 1] = n end
+    for _, n in ipairs({ "scada", "sensor", "diskstation", "lavasensor", "energysensor" }) do
+      if content:find('"' .. n .. '"', 1, true) then addUnique(list, normalize(n)) end
     end
   end
   return list, content
@@ -63,18 +74,17 @@ local function writeList(list, oldContent)
   f.close()
 end
 
-local cmd, name = ...
+local cmd, rawName = ...
+local name = rawName and normalize(rawName)
 local list, content = readList()
 
-if cmd == "add" and isKnown(name) then
-  local has = false
-  for _, n in ipairs(list) do if n == name then has = true end end
-  if not has then list[#list + 1] = name end
+if cmd == "add" and name then
+  addUnique(list, name)
   writeList(list, content)
   print("Autostart: " .. table.concat(list, ", "))
   print("Wpisz 'reboot', zeby uruchomic.")
 
-elseif cmd == "remove" and isKnown(name) then
+elseif cmd == "remove" and name then
   for i = #list, 1, -1 do if list[i] == name then table.remove(list, i) end end
   writeList(list, content)
   print("Autostart: " .. (#list > 0 and table.concat(list, ", ") or "(nic)"))
