@@ -3,16 +3,22 @@
 -- Uzycie:  torches <dlugosc> <szerokosc> [odstep=5] [-c]
 --
 -- Ustawienie zolwia (tak samo jak w flatten):
---   * zolw stoi NA poziomie terenu (blok pod nim = podloga),
---   * w lewym-dolnym rogu obszaru, przodem wzdluz "dlugosci",
---     obszar idzie do przodu i w PRAWO,
+--   * zolw stoi na ziemi, w lewym-dolnym rogu obszaru, przodem wzdluz
+--     "dlugosci"; obszar idzie do przodu i w PRAWO,
 --   * albo z flaga -c: na srodku obszaru.
 --
--- Zolw leci 1 blok nad ziemia prosto od pochodni do pochodni (nie przelatuje
--- calego obszaru), stawia je pod soba co <odstep> kratek i wraca na start.
--- Najlepiej dziala na terenie wyrownanym programem flatten.
+-- Dziala na terenie plaskim i gorzystym:
+--   * miedzy pochodniami zolw leci nad terenem - przed zboczem, pniem albo
+--     skala WZNOSI SIE (nie kopie tunelu); liscie i trawe usuwa po drodze,
+--   * w miejscu pochodni opada az do gruntu (przez liscie, trawe, snieg)
+--     i stawia pochodnie na prawdziwym podlozu,
+--   * pomija miejsca z woda/lawa, pniem drzewa, przepascia glebsza niz
+--     MAX_DROP i miejsca, gdzie pochodnia juz stoi,
+--   * na koniec wraca na pozycje startowa.
 
-local TORCH = "minecraft:torch"
+local TORCH     = "minecraft:torch"
+local MAX_DROP  = 64    -- max opadanie w miejscu pochodni (przepasc/wawoz)
+local MAX_CLIMB = 128   -- max wysokosc ponad start (zabezpieczenie)
 
 local args, CENTER = {}, false
 for _, a in ipairs({ ... }) do
@@ -30,6 +36,34 @@ if not LENGTH or not WIDTH or LENGTH < 1 or WIDTH < 1 or SPACING < 1 then
 end
 
 ---------------------------------------------------------------------------
+-- Rozpoznawanie blokow (turtle.inspect*)
+
+local function hasTag(b, tag) return b.tags ~= nil and b.tags[tag] == true end
+
+-- Bloki "miekkie": zolw je usuwa zamiast omijac (liscie, trawa, kwiaty, snieg)
+local function isSoft(b)
+  local n = b.name
+  if hasTag(b, "minecraft:leaves") or hasTag(b, "minecraft:replaceable")
+     or hasTag(b, "minecraft:flowers") or hasTag(b, "minecraft:replaceable_by_trees") then
+    return true
+  end
+  return n:find("leaves") ~= nil or n == "minecraft:grass" or n == "minecraft:short_grass"
+      or n == "minecraft:tall_grass" or n == "minecraft:fern" or n == "minecraft:large_fern"
+      or n == "minecraft:snow" or n == "minecraft:vine" or n == "minecraft:dead_bush"
+end
+
+local function isLiquid(b)
+  return b.name == "minecraft:water" or b.name == "minecraft:lava"
+      or b.name:find("flowing") ~= nil
+end
+
+local function isLog(b)
+  return hasTag(b, "minecraft:logs") or b.name:find("_log") ~= nil or b.name:find("_stem") ~= nil
+end
+
+local function isTorchBlock(b) return b.name:find("torch") ~= nil end
+
+---------------------------------------------------------------------------
 -- Pozycja wzgledem startu: x = do przodu, z = w prawo, y = w gore
 -- dir: 0 = +x, 1 = +z, 2 = -x, 3 = -z
 local x, y, z, dir = 0, 0, 0, 0
@@ -41,18 +75,6 @@ local function turnLeft()  turtle.turnLeft();  dir = (dir + 3) % 4 end
 local function face(d)
   if (dir + 3) % 4 == d then turnLeft() end
   while dir ~= d do turnRight() end
-end
-
-local function forward()
-  local tries = 0
-  while not turtle.forward() do
-    -- dig() radzi sobie tez z trawa/kwiatami; jak nie ma czego kopac - mob
-    if not turtle.dig() then turtle.attack() end
-    tries = tries + 1
-    if tries > 30 then error("Nie moge jechac do przodu (bedrock?)") end
-  end
-  if dir == 0 then x = x + 1 elseif dir == 1 then z = z + 1
-  elseif dir == 2 then x = x - 1 else z = z - 1 end
 end
 
 local function up()
@@ -73,6 +95,27 @@ local function down()
     if tries > 30 then error("Nie moge zejsc w dol") end
   end
   y = y - 1
+end
+
+-- Ruch do przodu nad terenem: miekkie bloki usuwa, przed reszta sie wznosi.
+local function forward()
+  local tries = 0
+  while not turtle.forward() do
+    local ok, b = turtle.inspect()
+    if ok and isSoft(b) then
+      turtle.dig()
+    elseif ok then
+      -- zbocze, skala, pien, pochodnia... - lecimy wyzej, nic nie niszczac
+      if y >= MAX_CLIMB then error("Przeszkoda za wysoka (MAX_CLIMB)") end
+      up()
+    else
+      turtle.attack() -- mob
+      tries = tries + 1
+      if tries > 30 then error("Cos blokuje droge") end
+    end
+  end
+  if dir == 0 then x = x + 1 elseif dir == 1 then z = z + 1
+  elseif dir == 2 then x = x - 1 else z = z - 1 end
 end
 
 local function goTo(tx, tz)
@@ -160,7 +203,7 @@ for pz = z0 + offset, z0 + WIDTH - 1, SPACING do
   reverse = not reverse
 end
 
--- Dlugosc trasy: start -> kolejne miejsca -> powrot, plus wzlot i ladowanie
+-- Dlugosc trasy w poziomie (bez wznoszenia/opadania, ktore zalezy od terenu)
 local pathLen, px, pz = 2, 0, 0
 for _, s in ipairs(spots) do
   pathLen = pathLen + math.abs(s[1] - px) + math.abs(s[2] - pz)
@@ -170,38 +213,70 @@ pathLen = pathLen + math.abs(px) + math.abs(pz)
 
 print(("Obszar %dx%d, odstep %d: potrzeba %d pochodni (masz %d)."):format(
   LENGTH, WIDTH, SPACING, #spots, countTorches()))
-print(("Trasa: %d ruchow."):format(pathLen))
+print(("Trasa w poziomie: %d ruchow (+ gory/doliny)."):format(pathLen))
 
-local placed, skipped = 0, 0
+local stats = { placed = 0, already = 0, liquid = 0, deep = 0, tree = 0, failed = 0 }
 
-local function placeTorch()
+-- Opada do gruntu. Wynik:
+--   "ok"     - zolw jest tuz nad gruntem,
+--   "torch"  - pod spodem juz stoi pochodnia,
+--   "liquid" - woda/lawa, "tree" - pien drzewa, "deep" - przepasc > MAX_DROP
+local function descendToGround()
+  local drop = 0
+  while true do
+    local ok, b = turtle.inspectDown()
+    if not ok then
+      if drop >= MAX_DROP then return "deep" end
+      down()
+      drop = drop + 1
+    elseif isTorchBlock(b) then return "torch"
+    elseif isLiquid(b) then return "liquid"
+    elseif isSoft(b) then turtle.digDown()   -- liscie/trawa/snieg: usun i opadaj dalej
+    elseif isLog(b) then return "tree"
+    else return "ok" end
+  end
+end
+
+local function placeTorchHere()
+  local r = descendToGround()
+  if r == "torch" then stats.already = stats.already + 1; return end
+  if r ~= "ok" then stats[r] = stats[r] + 1; return end
+
+  up() -- zwalniamy pole nad gruntem i stawiamy w nim pochodnie
   selectTorch()
-  -- trawa/kwiat pod zolwiem blokuje postawienie - usun je
-  if turtle.detectDown() then turtle.digDown() end
   if turtle.placeDown() then
-    placed = placed + 1
+    stats.placed = stats.placed + 1
   else
-    skipped = skipped + 1 -- np. dziura pod spodem
+    stats.failed = stats.failed + 1
   end
 end
 
 ---------------------------------------------------------------------------
--- Glowna petla: lot 1 blok nad ziemia od pochodni do pochodni
+-- Glowna petla: lot nad terenem od pochodni do pochodni
 
 refuel(pathLen + 10)
 up()
 
 for i, s in ipairs(spots) do
+  local nxt = spots[i + 1] or { 0, 0 }
+  -- zapas: powrot do domu + kolejny odcinek + opadanie i wznoszenie
+  refuel(math.abs(x) + math.abs(z) + math.abs(y)
+         + math.abs(nxt[1] - s[1]) + math.abs(nxt[2] - s[2]) + 2 * MAX_DROP + 20)
   goTo(s[1], s[2])
-  placeTorch()
+  placeTorchHere()
   _G.ccProgress = i / #spots -- postep dla listenera / SCADA
 end
 
+-- Powrot: nad teren startu, potem pionowo na wysokosc startowa
 goTo(0, 0)
-down()
+while y > 0 do down() end
+while y < 0 do up() end
 face(0)
 
-print(("Gotowe! Postawiono %d pochodni."):format(placed))
-if skipped > 0 then
-  print(("Pominieto %d miejsc (brak podlogi)."):format(skipped))
+print(("Gotowe! Postawiono %d pochodni."):format(stats.placed))
+if stats.already > 0 then print(("Juz stalo: %d"):format(stats.already)) end
+local skippedTotal = stats.liquid + stats.deep + stats.tree + stats.failed
+if skippedTotal > 0 then
+  print(("Pominieto %d: woda/lawa %d, drzewo %d, przepasc %d, inne %d"):format(
+    skippedTotal, stats.liquid, stats.tree, stats.deep, stats.failed))
 end

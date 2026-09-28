@@ -47,7 +47,7 @@ flatten <dlugosc> <szerokosc> [maxWGore=32] [maxWDol=8] [-c]
 torches <dlugosc> <szerokosc> [odstep=5] [-c]
 ```
 
-Żółw leci 1 blok nad ziemią i stawia pochodnie pod sobą. Najlepiej działa na terenie wyrównanym przez `flatten`.
+Żółw leci nad terenem (przed zboczem się wznosi, nie kopie), w miejscu pochodni opada do gruntu i ją stawia. Działa na płaskim i górzystym terenie; pomija wodę/lawę, pnie drzew i przepaści.
 
 Zdalnie: na pocket computerze uruchom `remote`, podaj ID żółwia, wybierz program i wymiary.
 
