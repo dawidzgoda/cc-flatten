@@ -187,25 +187,33 @@ local function sampleLava()
   table.sort(sources, function(a, b) return a.amount > b.amount end)
 
   lava.total, lava.sources = total, sources
+  local online = 0
+  for _, s in ipairs(sources) do if not s.offline then online = online + 1 end end
   local hist = lava.history
-  hist[#hist + 1] = { t = now(), v = lava.total }
+  -- sig = zestaw zrodel; bilans liczymy tylko z probek o tym samym zestawie
+  hist[#hist + 1] = { t = now(), v = lava.total, sig = online }
   if #hist > HISTORY_MAX then table.remove(hist, 1) end
 end
 
--- Zmiana zapasu w mB/min liczona z ostatniej minuty historii
-local function lavaRate()
-  local hist = lava.history
+-- Zmiana na jednostke czasu z ostatniej minuty historii. Bierze tylko probki
+-- z tym samym zestawem zrodel co ostatnia (sig) - inaczej start programu albo
+-- chwilowy zanik czujnika dawalby ogromny, falszywy bilans.
+local function histRate(hist, msPerUnit)
   if #hist < 2 then return 0 end
-  local last = hist[#hist]
-  local first = hist[1]
+  local last, first = hist[#hist], nil
   for i = #hist - 1, 1, -1 do
+    if hist[i].sig ~= last.sig then break end
     first = hist[i]
     if last.t - hist[i].t >= 60000 then break end
   end
-  local dt = (last.t - first.t) / 60000
+  if not first then return 0 end
+  local dt = (last.t - first.t) / msPerUnit
   if dt <= 0 then return 0 end
   return (last.v - first.v) / dt
 end
+
+-- mB na minute
+local function lavaRate() return histRate(lava.history, 60000) end
 
 local function buckets(mB) return ("%.1f B"):format(mB / 1000) end
 
@@ -261,23 +269,13 @@ local function sampleEnergy()
 
   energy.total, energy.capacity, energy.sources = total, capacity, sources
   local hist = energy.history
-  hist[#hist + 1] = { t = now(), v = total }
+  -- sig = laczna pojemnosc: zmienia sie, gdy czujnik zniknie/dojdzie
+  hist[#hist + 1] = { t = now(), v = total, sig = capacity }
   if #hist > HISTORY_MAX then table.remove(hist, 1) end
 end
 
--- Bilans w FE/t (1 s = 20 tickow) z ostatniej minuty historii
-local function energyRate()
-  local hist = energy.history
-  if #hist < 2 then return 0 end
-  local last, first = hist[#hist], hist[1]
-  for i = #hist - 1, 1, -1 do
-    first = hist[i]
-    if last.t - hist[i].t >= 60000 then break end
-  end
-  local ticks = (last.t - first.t) / 50
-  if ticks <= 0 then return 0 end
-  return (last.v - first.v) / ticks
-end
+-- Bilans w FE/t (1 tick = 50 ms)
+local function energyRate() return histRate(energy.history, 50) end
 
 local function energyPct()
   if energy.capacity <= 0 then return 0 end

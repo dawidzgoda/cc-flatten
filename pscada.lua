@@ -80,24 +80,35 @@ end
 ---------------------------------------------------------------------------
 -- Dane
 
+-- Zwraca sumy oraz liczbe aktywnych czujnikow lawy (do sprawdzania zestawu)
 local function totals()
-  local lava, en, cap = 0, 0, 0
-  for _, s in pairs(lavaSensors) do if isOnline(s) then lava = lava + s.total end end
+  local lava, en, cap, lavaN = 0, 0, 0, 0
+  for _, s in pairs(lavaSensors) do
+    if isOnline(s) then lava, lavaN = lava + s.total, lavaN + 1 end
+  end
   for _, s in pairs(energySensors) do
     if isOnline(s) then en, cap = en + s.energy, cap + s.capacity end
   end
-  return lava, en, cap
+  return lava, en, cap, lavaN
 end
 
-local function pushHist(hist, v)
-  hist[#hist + 1] = { t = now(), v = v }
+-- sig = zestaw zrodel; bilans liczymy tylko z probek o tym samym zestawie
+local function pushHist(hist, v, sig)
+  hist[#hist + 1] = { t = now(), v = v, sig = sig }
   if #hist > 24 then table.remove(hist, 1) end   -- 2 min historii
 end
 
--- zmiana na minute z historii
+-- Zmiana na minute. Pomija probki sprzed zmiany zestawu czujnikow - inaczej
+-- start programu (zanim dojda dane, zapas = 0) dawalby ogromny, falszywy bilans.
 local function ratePerMin(hist)
   if #hist < 2 then return 0 end
-  local a, b = hist[1], hist[#hist]
+  local b, a = hist[#hist], nil
+  for i = #hist - 1, 1, -1 do
+    if hist[i].sig ~= b.sig then break end
+    a = hist[i]
+    if b.t - a.t >= 60000 then break end   -- ostatnia minuta, jak w SCADA
+  end
+  if not a then return 0 end
   local dt = (b.t - a.t) / 60000
   return dt > 0 and (b.v - a.v) / dt or 0
 end
@@ -367,9 +378,9 @@ local function pinger()
   while true do
     if DEMO then demoTick() else rednet.broadcast({ cmd = "ping" }, PROTOCOL) end
     sleep(1.5)
-    local lava, en = totals()
-    pushHist(lavaHist, lava)
-    pushHist(energyHist, en)
+    local lava, en, cap, lavaN = totals()
+    pushHist(lavaHist, lava, lavaN)
+    pushHist(energyHist, en, cap)
     draw()
     sleep(REFRESH - 1.5)
   end
