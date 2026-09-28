@@ -4,7 +4,24 @@
 -- Na zwyklym komputerze: scada, sensor (+ stare nazwy lavasensor/energysensor),
 --                        autostart, mkdisk, diskstation, remote, update
 
-local BASE = "https://raw.githubusercontent.com/dawidzgoda/cc-flatten/main/"
+local REPO = "dawidzgoda/cc-flatten"
+
+-- Adresy z "main" GitHub potrafi serwowac z nieaktualnej pamieci podrecznej
+-- (nawet kilka minut). Pytamy wiec API o numer najnowszego commita i
+-- pobieramy pliki spod adresu z tym numerem - ten zawsze jest aktualny.
+local function latestBase()
+  local res = http and http.get("https://api.github.com/repos/" .. REPO .. "/commits/main",
+                                { Accept = "application/vnd.github.sha" })
+  if res then
+    local sha = res.readAll():match("^%x+")
+    res.close()
+    if sha and #sha >= 7 then
+      return "https://raw.githubusercontent.com/" .. REPO .. "/" .. sha .. "/", sha:sub(1, 7)
+    end
+  end
+  -- API niedostepne (np. limit zapytan) - awaryjnie "main"
+  return "https://raw.githubusercontent.com/" .. REPO .. "/main/", "main"
+end
 
 local files
 if turtle then
@@ -37,15 +54,15 @@ end
 
 if not http then error("HTTP jest wylaczone w configu CC: Tweaked") end
 
-print(turtle and "Aktualizuje zolwia..."
-  or pocket and "Aktualizuje pilota..."
-  or "Aktualizuje komputer...")
+local BASE, version = latestBase()
+print((turtle and "Aktualizuje zolwia"
+  or pocket and "Aktualizuje pilota"
+  or "Aktualizuje komputer") .. " (wersja " .. version .. ")...")
 local allOk = true
 for _, f in ipairs(files) do
   local src, dst = f[1], f[2]
   write(("  %-8s "):format(dst))
-  -- parametr ?t= omija cache GitHuba
-  local res, err = http.get(BASE .. src .. "?t=" .. os.epoch("utc"))
+  local res, err = http.get(BASE .. src)
   if not res then
     print("BLAD: " .. tostring(err))
     allOk = false

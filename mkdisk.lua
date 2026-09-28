@@ -11,7 +11,7 @@
 --
 -- Na dyskietke NIE trafiaja programy stacji (mkdisk, diskstation).
 
-local BASE  = "https://raw.githubusercontent.com/dawidzgoda/cc-flatten/main/"
+local REPO  = "dawidzgoda/cc-flatten"
 local FILES = {
   "flatten", "torches", "listener",      -- zolw
   "scada", "sensor", "autostart",        -- komputery
@@ -54,9 +54,22 @@ end
 
 for _, f in ipairs(fs.list(dir)) do fs.delete(fs.combine(dir, f)) end
 
+-- Najnowszy commit z API (adresy z "main" bywaja nieaktualne w cache GitHuba)
+local BASE, version = "https://raw.githubusercontent.com/" .. REPO .. "/main/", "main"
+local res = http.get("https://api.github.com/repos/" .. REPO .. "/commits/main",
+                     { Accept = "application/vnd.github.sha" })
+if res then
+  local sha = res.readAll():match("^%x+")
+  res.close()
+  if sha and #sha >= 7 then
+    BASE, version = "https://raw.githubusercontent.com/" .. REPO .. "/" .. sha .. "/", sha:sub(1, 7)
+  end
+end
+print("Wersja: " .. version)
+
 local function download(src, dst)
   write(("  %-14s "):format(src))
-  local res, err = http.get(BASE .. src .. "?t=" .. os.epoch("utc"))
+  local res, err = http.get(BASE .. src)
   if not res then print("BLAD: " .. tostring(err)); return false end
   local body = res.readAll(); res.close()
   local ok, werr = pcall(function()
@@ -75,7 +88,7 @@ end
 allOk = download("installer.lua", fs.combine(dir, "startup.lua")) and allOk
 
 local v = fs.open(fs.combine(dir, "version"), "w")
-v.write(os.date("%Y-%m-%d %H:%M"))
+v.write(os.date("%Y-%m-%d %H:%M") .. " (" .. version .. ")")
 v.close()
 drive.setDiskLabel(DISK_LABEL)
 
