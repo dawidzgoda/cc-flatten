@@ -354,17 +354,19 @@ local function drawPoint()
   if t.capKey then
     ui.cput(2, h - 8, fit("Pojemnosc (wiadra)" .. (cap > 0 and "" or " - nieznana")
                           .. ", Create: 8 B/blok", cw - 2), colors.lightGray, colors.black)
-    ui.numberRow(h - 7, "Poj.", cap, function(v) config.set(t.group, t.capKey, clamp(v, 0, 99999)) end, 64, 8)
+    ui.numberRow(h - 7, "Poj.", cap, function(v) config.set(t.group, t.capKey, clamp(v, 0, 99999)) end, 64, 8,
+                 { title = "pojemnosc " .. t.title, unit = "B" })
   end
 
   -- prog alarmu
   ui.cput(2, h - 5, fit(t.desc .. (thr > 0 and "" or " (wyl.)"), cw - 2),
           thr > 0 and colors.white or colors.gray, colors.black)
-  ui.numberRow(h - 4, t.unit, thr, function(v) config.set(t.group, t.key, clamp(v, 0, t.max)) end, t.big, t.small)
+  ui.numberRow(h - 4, t.unit, thr, function(v) config.set(t.group, t.key, clamp(v, 0, t.max)) end, t.big, t.small,
+               { title = "prog " .. t.title, unit = t.unit })
   ui.cbutton(2, h - 3, " WYLACZ ", colors.gray, function() config.set(t.group, t.key, 0) end)
   ui.cbutton(11, h - 3, " DOMYSLNE ", colors.gray, function() config.set(t.group, t.key, nil) end)
 
-  ui.footer("Ustawienia zapisuja sie od razu")
+  ui.footer("Dotknij liczby = wpisz z klawiatury")
 end
 
 ---------------------------------------------------------------------------
@@ -441,6 +443,7 @@ function views.draw()
   if app.updating then return drawUpdating() end
 
   drawSidebar()
+  if app.keypad then return ui.drawKeypad() end
   local v = app.view
   if v == "alarms" then drawAlarms()
   elseif v == "group" then drawGroup()

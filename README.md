@@ -79,7 +79,7 @@ Monitor z **sidebarem** po lewej (dotyk). Im większy monitor, tym lepiej (min. 
 | **POCIAGI** | stacje i sygnały Create |
 | TEST SYRENY / UPDATE | na dole sidebara |
 
-Pozycja w sidebarze miga na czerwono, gdy w jej kategorii jest niepotwierdzony alarm. W kategorii: dotknij nazwy grupy → wszystkie sekcje tej grupy; dotknij pozycji → **wykres** (10 min / 2 h), próg alarmu i (dla płynów) pojemność.
+Pozycja w sidebarze miga na czerwono, gdy w jej kategorii jest niepotwierdzony alarm. W kategorii: dotknij nazwy grupy → wszystkie sekcje tej grupy; dotknij pozycji → **wykres** (10 min / 2 h), próg alarmu i (dla płynów) pojemność. Dotknięcie liczby progu lub pojemności otwiera **klawiaturę numeryczną** na monitorze (C = wyczyść, < = cofnij, OK = zapisz).
 
 Kod SCADA jest podzielony na moduły w `scadalib/`: `app` (stan, narzędzia), `config` (progi), `data` (grupy, historia), `alarms` (alarmy, syrena, ntfy), `ui` (monitor, sidebar), `sections` (kategorie), `views` (ekrany).
 

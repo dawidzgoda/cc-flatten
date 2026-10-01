@@ -20,6 +20,7 @@ app.cfgTarget = nil          -- pozycja w widoku "point"
 app.scroll    = {}           -- klucz listy -> przesuniecie
 app.message   = nil          -- { text, color, time } w stopce
 app.blink     = false        -- miganie niepotwierdzonych alarmow
+app.keypad    = nil          -- otwarta klawiatura numeryczna (ui.openKeypad)
 
 ---------------------------------------------------------------------------
 -- Narzedzia
@@ -32,10 +33,12 @@ function app.setMsg(text, color)
   app.message = { text = text, color = color or colors.white, time = app.now() }
 end
 
--- Przejscie do widoku; "point" pamieta, skad przyszlismy
+-- Przejscie do widoku; "point" pamieta, skad przyszlismy.
+-- Zmiana widoku zamyka otwarta klawiature numeryczna.
 function app.go(view)
   if view == "point" and app.view ~= "point" then app.prevView = app.view end
   app.view = view
+  app.keypad = nil
 end
 
 function app.shortName(n) return (tostring(n):match(":(.+)$") or tostring(n)) end

@@ -152,8 +152,10 @@ function ui.scrollButtons(key, pageSize)
   end, colors.black)
 end
 
--- Wiersz z wartoscia i przyciskami -duzy -maly wartosc +maly +duzy
-function ui.numberRow(y, label, value, set, bigStep, smallStep)
+-- Wiersz z wartoscia i przyciskami -duzy -maly wartosc +maly +duzy.
+-- kp = { title, unit }: wartosc staje sie przyciskiem otwierajacym
+-- klawiature numeryczna (wpisanie dokladnej liczby).
+function ui.numberRow(y, label, value, set, bigStep, smallStep, kp)
   smallStep = smallStep or 1
   ui.cput(2, y, label, colors.lightGray, colors.black)
   local x = 10
@@ -163,7 +165,13 @@ function ui.numberRow(y, label, value, set, bigStep, smallStep)
   end
   btn("-" .. bigStep, colors.red, value - bigStep)
   btn("-" .. smallStep, colors.red, value - smallStep)
-  ui.cput(x, y, ("%5d"):format(value), colors.white, colors.black)
+  if kp then
+    ui.cbutton(x, y, ("%5d"):format(value), colors.gray, function()
+      ui.openKeypad({ title = kp.title, unit = kp.unit, value = value, onOk = set })
+    end, colors.white)
+  else
+    ui.cput(x, y, ("%5d"):format(value), colors.white, colors.black)
+  end
   x = x + 6
   btn("+" .. smallStep, colors.green, value + smallStep)
   btn("+" .. bigStep, colors.green, value + bigStep)
@@ -172,6 +180,89 @@ end
 function ui.toggle(x, y, label, active, action)
   ui.cbutton(x, y, label, active and colors.blue or colors.gray, action,
              active and colors.white or colors.lightGray)
+end
+
+-- Przycisk na kilka wierszy (latwiej trafic palcem); etykieta w srodku
+function ui.bigButton(x, y, width, height, label, bg, action, fg)
+  local mid = y + math.floor((height - 1) / 2)
+  for r = 0, height - 1 do
+    local row = y + r
+    local text = row == mid
+      and fit((" "):rep(math.floor((width - #label) / 2)) .. label, width)
+      or (" "):rep(width)
+    ui.cbutton(x, row, text, bg, action, fg)
+  end
+end
+
+---------------------------------------------------------------------------
+-- Klawiatura numeryczna (okno w obszarze tresci)
+--
+-- ui.openKeypad{ title, unit, value, onOk = function(liczba) }
+-- Cyfry dopisuja, C czysci, < kasuje ostatnia cyfre, OK zapisuje
+-- (pusty wpis = bez zmian), ANULUJ / WSTECZ zamyka bez zmian.
+
+local KEYPAD_ROWS = { { "7", "8", "9" }, { "4", "5", "6" }, { "1", "2", "3" }, { "C", "0", "<" } }
+local KEYPAD_MAX_DIGITS = 6
+
+function ui.openKeypad(opts)
+  app.keypad = { title = opts.title or "Wartosc", unit = opts.unit or "",
+                 old = opts.value or 0, text = "", onOk = opts.onOk }
+end
+
+local function keypadPress(key)
+  local k = app.keypad
+  if not k then return end
+  if key == "C" then
+    k.text = ""
+  elseif key == "<" then
+    k.text = k.text:sub(1, -2)
+  elseif #k.text < KEYPAD_MAX_DIGITS then
+    k.text = (k.text == "0") and key or (k.text .. key)
+  end
+end
+
+local function keypadOk()
+  local k = app.keypad
+  app.keypad = nil
+  if k and k.text ~= "" and k.onOk then k.onOk(tonumber(k.text)) end
+end
+
+function ui.drawKeypad()
+  local k = app.keypad
+  local cw, h = ui.cw, ui.h
+  ui.header("Wpisz: " .. k.title, function() app.keypad = nil end)
+
+  -- wyswietlacz: wpisywana liczba (albo obecna wartosc na szaro)
+  local typing = k.text ~= ""
+  local disp = (typing and k.text or tostring(k.old)) .. (k.unit ~= "" and (" " .. k.unit) or "")
+  local dw = math.min(cw - 2, 23)
+  local dx = math.floor((cw - dw) / 2) + 1
+  ui.cput(dx, 3, (" "):rep(dw), nil, colors.lightGray)
+  ui.cput(dx + dw - #disp - 1, 3, disp, typing and colors.black or colors.gray, colors.lightGray)
+  ui.cput(dx, 4, fit(typing and "OK = zapisz" or "obecnie - wpisz nowa wartosc", dw),
+          colors.lightGray, colors.black)
+
+  -- klawisze: 3 kolumny po 7 znakow; wysokosc zalezna od monitora
+  local keyW, gap = 7, 1
+  local gridW = keyW * 3 + gap * 2
+  local gx = math.floor((cw - gridW) / 2) + 1
+  local avail = h - 1 - 6                       -- od wiersza 6 do stopki
+  local keyH = math.max(1, math.min(3, math.floor((avail - 4) / 5)))
+  local vgap = (avail >= keyH * 5 + 4) and 1 or 0
+  local y = 6
+  for _, row in ipairs(KEYPAD_ROWS) do
+    for i, key in ipairs(row) do
+      local bg = (key == "C" or key == "<") and colors.orange or colors.gray
+      ui.bigButton(gx + (i - 1) * (keyW + gap), y, keyW, keyH, key, bg,
+                   function() keypadPress(key) end, colors.white)
+    end
+    y = y + keyH + vgap
+  end
+  local half = math.floor((gridW - gap) / 2)
+  ui.bigButton(gx, y, half, keyH, "ANULUJ", colors.red, function() app.keypad = nil end, colors.white)
+  ui.bigButton(gx + half + gap, y, gridW - half - gap, keyH, "OK", colors.green, keypadOk, colors.white)
+
+  ui.footer("Dotknij cyfr, OK = zapisz")
 end
 
 ---------------------------------------------------------------------------
