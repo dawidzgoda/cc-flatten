@@ -1,21 +1,19 @@
 -- pscada.lua - mini SCADA na (advanced) pocket computer
 --
--- Uzycie:  pscada        - dane z zolwi, czujnikow (sensor) i alarmy ze SCADA
+-- Uzycie:  pscada        - dane z czujnikow (sensor) i alarmy ze SCADA
 --          pscada demo   - dane testowe
 --
--- Obsluga: dotknij zakladki u gory albo klawisze 1/2/3, Q - wyjscie.
---   1 ZOLW - stan zolwi
---   2 ZAKL - grupy z czujnikow (prad, SU, plyny, magazyn);
+-- Obsluga: dotknij zakladki u gory albo klawisze 1/2, Q - wyjscie.
+--   1 ZAKL - grupy z czujnikow (prad, SU, plyny, magazyn);
 --            przewijanie: strzalki gora/dol albo kolko myszy
---   3 ALM  - alarmy ze SCADA; dotknij alarmu = potwierdz, A = wszystkie.
+--   2 ALM  - alarmy ze SCADA; dotknij alarmu = potwierdz, A = wszystkie.
 --            Alarmy i progi liczy duza SCADA - musi dzialac.
+-- Zolwie sa niezalezne - steruje nimi program 'remote'.
 
-local PROTOCOL        = "flatten"
 local SENSOR_PROTOCOL = "scada_sensor"
 local ALARM_PROTOCOL  = "scada_alarm"
 local REFRESH         = 5
 local OFFLINE         = 15
-local LOW_FUEL        = 500
 
 local DEMO = ({ ... })[1] == "demo"
 
@@ -39,9 +37,8 @@ local function fmtNum(n)
   return tostring(math.floor(n))
 end
 
-local turtles = {}
-local groups  = {}            -- nazwa -> { last, sum }
-local view    = "turtles"
+local groups  = {}            -- nazwa -> { last, members, sum }
+local view    = "plant"
 local plantScroll = 0
 
 -- Alarmy ze SCADA
@@ -132,10 +129,6 @@ end
 
 local function demoTick()
   local t = os.clock()
-  turtles[3] = { last = now(), data = { label = "Kopacz", state = "work", program = "flatten",
-                                        progress = (t / 60) % 1, fuel = 4200 } }
-  turtles[7] = { last = now(), data = { state = "idle", fuel = 320 } }
-  turtles[21] = turtles[21] or { last = now() - 60000, data = { state = "idle", fuel = 0 } }
   receiveSensor(9001, { label = "Wyspa Glowna", points = {
     { kind = "energy", energy = math.floor(35e6 + 30e6 * math.sin(t / 30)), capacity = 70e6 },
     { kind = "stress", stress = 1500, capacity = 2048 },
@@ -152,7 +145,7 @@ local function demoTick()
     setAlarms({
       { key = "g_su_Kopalnia", text = "[Kopalnia] PRZECIAZENIE sieci", crit = true, group = "Kopalnia",
         since = now(), active = true, acked = false },
-      { key = "t_off_21", text = "Zolw #21 offline", crit = false,
+      { key = "g_off_Magazyn#7", text = "[Magazyn] czujnik #7 offline", crit = false, group = "Magazyn",
         since = now() - 300000, active = true, acked = true },
       { key = "g_en_Kopalnia", text = "[Kopalnia] malo pradu: 15%", crit = true, group = "Kopalnia",
         since = now() - 600000, active = false, acked = false },
@@ -191,21 +184,16 @@ local function sortedIds(t)
 end
 
 local TABS = {
-  { x = 1,  label = " ZOLW ", view = "turtles" },
-  { x = 7,  label = " ZAKL ", view = "plant" },
-  { x = 13, label = " ALM ",  view = "alarms" },
+  { x = 1, label = " ZAKLAD ", view = "plant" },
+  { x = 9, label = " ALARMY ", view = "alarms" },
 }
 
 local function drawTabs()
   fillRow(1, c(colors.blue, colors.black))
   local alarm = {
-    turtles = false,
     plant = unackedCount(true) > 0,
     alarms = unackedCount() > 0,
   }
-  for _, a in ipairs(alarmList) do
-    if not a.acked and not a.group and a.active then alarm.turtles = true end
-  end
   for _, t in ipairs(TABS) do
     local active = view == t.view
     local bg = active and c(colors.lightBlue, colors.white)
@@ -214,38 +202,6 @@ local function drawTabs()
   end
   local clock = textutils.formatTime(os.time(), true)
   put(w - #clock + 1, 1, clock, colors.white, c(colors.blue, colors.black))
-end
-
-local function drawTurtles()
-  fillRow(2, c(colors.gray, colors.black))
-  put(1, 2, "ID  STAN     %  PALIWO", colors.white, c(colors.gray, colors.black))
-  local y = 3
-  for _, id in ipairs(sortedIds(turtles)) do
-    if y > h - 1 then break end
-    local e, d = turtles[id], turtles[id].data
-    local st, col
-    if not isOnline(e) then st, col = "OFFLN", colors.red
-    elseif d.waiting then st, col = "BRAK", colors.orange
-    elseif d.state == "work" then st, col = "PRACA", colors.yellow
-    else st, col = "CZEKA", colors.lime end
-    put(1, y, fit("#" .. id, 4), colors.white, colors.black)
-    put(5, y, fit(st, 6), c(col), colors.black)
-    local pr = (isOnline(e) and d.state == "work" and d.progress)
-               and ("%3d%%"):format(math.floor(d.progress * 100)) or "   -"
-    put(11, y, pr, colors.white, colors.black)
-    local fuel = d.fuel == "unlimited" and "inf" or tostring(d.fuel or "?")
-    local fc = (tonumber(d.fuel) and d.fuel < LOW_FUEL) and c(colors.red) or colors.white
-    put(17, y, ("%7s"):format(fuel:sub(1, 7)), fc, colors.black)
-    y = y + 1
-    if isOnline(e) and d.waiting and y <= h - 1 then
-      put(2, y, fit("! " .. d.waiting, w - 2), c(colors.orange), colors.black)
-      y = y + 1
-    elseif d.label and y <= h - 1 then
-      put(2, y, fit(d.label, w - 2), c(colors.lightGray), colors.black)
-      y = y + 1
-    end
-  end
-  if y == 3 then put(1, 4, "Brak zolwi w zasiegu", c(colors.lightGray), colors.black) end
 end
 
 -- Liczba alarmow grupy (z listy SCADA)
@@ -349,16 +305,15 @@ local function draw()
   term.clear()
   drawTabs()
 
-  if view == "plant" then drawPlant()
-  elseif view == "alarms" then drawAlarms()
-  else drawTurtles() end
+  if view == "alarms" then drawAlarms()
+  else drawPlant() end
 
   if now() < newAlarmUntil then
     fillRow(h, c(colors.red, colors.white))
-    put(1, h, "!! NOWY ALARM - klawisz 3", colors.white, c(colors.red, colors.white))
+    put(1, h, "!! NOWY ALARM - klawisz 2", colors.white, c(colors.red, colors.white))
   else
     fillRow(h, c(colors.gray, colors.black))
-    put(1, h, DEMO and "DEMO | 1-3, Q-wyjscie" or "1-3 zakladki, Q-wyjscie",
+    put(1, h, DEMO and "DEMO | 1-2, Q-wyjscie" or "1-2 zakladki, Q-wyjscie",
         colors.white, c(colors.gray, colors.black))
   end
 end
@@ -371,9 +326,7 @@ local function receiver()
   while true do
     local id, msg, proto = rednet.receive()
     if type(msg) == "table" then
-      if proto == PROTOCOL and msg.cmd == "pong" then
-        turtles[id] = { data = msg, last = now() }
-      elseif proto == SENSOR_PROTOCOL and msg.cmd == "data" then
+      if proto == SENSOR_PROTOCOL and msg.cmd == "data" then
         receiveSensor(id, msg)
         if view == "plant" then draw() end
       elseif proto == ALARM_PROTOCOL and msg.cmd == "alarms" and type(msg.list) == "table" then
@@ -388,7 +341,7 @@ end
 
 local function pinger()
   while true do
-    if DEMO then demoTick() else rednet.broadcast({ cmd = "ping" }, PROTOCOL) end
+    if DEMO then demoTick() end
     sleep(1.5)
     draw()
     sleep(REFRESH - 1.5)
@@ -412,9 +365,8 @@ local function ui()
       plantScroll = plantScroll + a
       draw()
     elseif ev == "key" then
-      if a == keys.one then view = "turtles"
-      elseif a == keys.two then view = "plant"
-      elseif a == keys.three then view = "alarms"; newAlarmUntil = 0
+      if a == keys.one then view = "plant"
+      elseif a == keys.two then view = "alarms"; newAlarmUntil = 0
       elseif a == keys.up and view == "plant" then plantScroll = plantScroll - 1
       elseif a == keys.down and view == "plant" then plantScroll = plantScroll + 1
       elseif a == keys.a and view == "alarms" then sendAck(nil)

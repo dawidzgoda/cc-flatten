@@ -1,6 +1,6 @@
 -- listener.lua - nasluch polecen na zolwiu (zapisz jako "startup")
 -- Czeka na polecenia z pilota (remote.lua) i uruchamia flatten lub torches.
--- Na "ping" (pilot, SCADA) odpowiada stanem - rowniez w trakcie pracy.
+-- Na "ping" (pilot) odpowiada stanem - rowniez w trakcie pracy.
 
 local PROTOCOL = "flatten"
 
@@ -42,28 +42,18 @@ local function parseStart(msg)
   return runArgs
 end
 
--- Zdalna aktualizacja z przycisku UPDATE na SCADA
-local ADMIN_PROTOCOL = "scada_admin"
+-- Zolwie sa niezalezne od SCADA: aktualizacja tylko recznie (update).
 
-local function remoteUpdate(sender)
-  rednet.send(sender, { cmd = "updating", label = os.getComputerLabel() }, ADMIN_PROTOCOL)
-  print("Zdalna aktualizacja...")
-  shell.run("update")
-  os.reboot()
-end
-
--- W trakcie pracy: odpowiada na ping, odrzuca kolejne starty i aktualizacje
+-- W trakcie pracy: odpowiada na ping, odrzuca kolejne starty
 local function busyResponder()
   while true do
-    local sender, msg, proto = rednet.receive()
+    local sender, msg = rednet.receive(PROTOCOL)
     if type(msg) ~= "table" then
       -- nic
-    elseif proto == PROTOCOL and msg.cmd == "ping" then
+    elseif msg.cmd == "ping" then
       sendPong(sender)
-    elseif proto == PROTOCOL and msg.cmd == "start" then
+    elseif msg.cmd == "start" then
       rednet.send(sender, { cmd = "error", text = "Zolw jest zajety" }, PROTOCOL)
-    elseif proto == ADMIN_PROTOCOL and msg.cmd == "update" then
-      rednet.send(sender, { cmd = "busy", label = os.getComputerLabel() }, ADMIN_PROTOCOL)
     end
   end
 end
@@ -72,11 +62,8 @@ print(("Zolw #%d czeka na polecenia..."):format(os.getComputerID()))
 
 while true do
   local sender, msg, proto = rednet.receive()
-  if proto == ADMIN_PROTOCOL and type(msg) == "table" and msg.cmd == "update" then
-    remoteUpdate(sender)
-
-  elseif proto ~= PROTOCOL then
-    -- inne protokoly (czujniki, alarmy) nas nie dotycza
+  if proto ~= PROTOCOL then
+    -- inne protokoly (czujniki, alarmy, SCADA) nas nie dotycza
 
   elseif type(msg) == "table" and msg.cmd == "ping" then
     sendPong(sender)

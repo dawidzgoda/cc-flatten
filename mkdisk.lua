@@ -16,6 +16,9 @@ local FILES = {
   "flatten", "torches", "listener",      -- zolw
   "scada", "sensor", "autostart",        -- komputery
   "remote", "update",
+  -- moduly SCADA
+  "scadalib/app", "scadalib/config", "scadalib/data", "scadalib/alarms",
+  "scadalib/ui", "scadalib/sections", "scadalib/views",
 }
 local DISK_LABEL = "Instalator cc-flatten"
 
@@ -73,6 +76,7 @@ local function download(src, dst)
   if not res then print("BLAD: " .. tostring(err)); return false end
   local body = res.readAll(); res.close()
   local ok, werr = pcall(function()
+    if not fs.exists(fs.getDir(dst)) then fs.makeDir(fs.getDir(dst)) end
     local h = fs.open(dst, "w"); h.write(body); h.close()
   end)
   if not ok then print("BLAD zapisu: " .. tostring(werr)); return false end

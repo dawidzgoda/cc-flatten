@@ -59,6 +59,8 @@ local function copy(name, dst)
     return false
   end
   if fs.exists(dst) then fs.delete(dst) end
+  local dir = fs.getDir(dst)
+  if dir ~= "" and not fs.exists(dir) then fs.makeDir(dir) end
   fs.copy(src, dst)
   print("  " .. dst)
   return true
@@ -140,6 +142,10 @@ term.clear(); term.setCursorPos(1, 1)
 print("Instalacja: " .. role.name)
 for _, n in ipairs({ "scada", "sensor", "autostart", "remote", "update" }) do
   copy(n, n)
+end
+-- moduly SCADA (z rozszerzeniem .lua - laduje je require)
+for _, m in ipairs({ "app", "config", "data", "alarms", "ui", "sections", "views" }) do
+  copy("scadalib/" .. m, "scadalib/" .. m .. ".lua")
 end
 
 -- autostart: dokladnie programy z wybranej roli

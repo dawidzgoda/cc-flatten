@@ -6,10 +6,10 @@ Programy dla CC: Tweaked (Minecraft): żółwie do wyrównywania terenu i stawia
 |---|---|---|
 | `flatten.lua` | żółw (`flatten`) | wyrównuje obszar: ścina wzniesienia, zasypuje dziury |
 | `torches.lua` | żółw (`torches`) | stawia pochodnie w siatce, także w górach |
-| `listener.lua` | żółw (`startup`) | odbiera polecenia z pilota/SCADA przez rednet |
+| `listener.lua` | żółw (`startup`) | odbiera polecenia z pilota przez rednet |
 | `remote.lua` | pocket (`remote`) | pilot: ID żółwia, program, wymiary, start |
-| `pscada.lua` | pocket (`pscada`) | mini SCADA: żółwie, grupy zakładu, alarmy |
-| `scada.lua` | komputer + advanced monitor (`scada`) | panel: alarmy, żółwie, zakład w grupach |
+| `pscada.lua` | pocket (`pscada`) | mini SCADA: grupy zakładu, alarmy |
+| `scada.lua` + `scadalib/*.lua` | komputer + advanced monitor (`scada`) | panel zakładu z sidebarem: alarmy, przegląd, kategorie, wykresy |
 | `sensor.lua` | komputer przy maszynach (`sensor`) | czujnik: sam wykrywa i wysyła dane do SCADA |
 | `lavasensor.lua`, `energysensor.lua` | – | stare nazwy, aliasy do `sensor` |
 | `autostart.lua` | komputer (`autostart`) | autostart programów z auto-restartem |
@@ -48,7 +48,7 @@ torches <dlugosc> <szerokosc> [odstep=5] [-c]
 - `flatten`: żółw stoi **na docelowym poziomie** (blok pod nim = przyszła powierzchnia),
 - `torches`: leci nad terenem (przed zboczem się wznosi, nie kopie), w miejscu pochodni opada do gruntu; pomija wodę/lawę, pnie drzew i przepaści.
 
-Zdalnie: `remote` na pockecie albo zakładka **ZOLWIE** na SCADA.
+Zdalnie: `remote` na pockecie. Żółwie są **niezależne od SCADA** — aktualizujesz je ręcznie (`update`).
 
 ## Czujnik (`sensor`)
 
@@ -66,15 +66,26 @@ Jeden komputer z czujnikiem = jedna **grupa** na SCADA. Nazwa grupy to etykieta 
 
 ## SCADA
 
-Zakładki na monitorze (dotyk):
+Monitor z **sidebarem** po lewej (dotyk). Im większy monitor, tym lepiej (min. ok. 50×14 znaków; wielkość tekstu dobiera się sama, ręcznie: `set scada.scale 1`):
 
-- **ALM** — alarmy, dziennik zdarzeń, przycisk **UPDATE**,
-- **ZOLWIE** — stan żółwi; dotknij żółwia → program i parametry → START,
-- **ZAKLAD** — karty grup (status, prąd, SU, płyny...). Dotknij grupy → szczegóły w sekcjach. Dotknij pozycji → **wykres** (10 min albo 2 h) i próg alarmu tej pozycji.
+| Pozycja | Co pokazuje |
+|---|---|
+| **ALARMY** | lista alarmów (dotknij = potwierdź), dziennik zdarzeń |
+| **PRZEGLAD** | prąd całego zakładu z prognozą, karty grup |
+| **PRAD** | magazyny FE ze wszystkich grup: pasek, bilans FE/t, „pełne/puste za” |
+| **KINETYKA** | stressometry (SU, pasek obciążenia) i speedometry ze wszystkich grup |
+| **PLYNY** | płyny ze wszystkich grup; z ustawioną pojemnością: pasek i prognoza |
+| **MAGAZYN** | obserwowane i najliczniejsze przedmioty w każdej grupie |
+| **POCIAGI** | stacje i sygnały Create |
+| TEST SYRENY / UPDATE | na dole sidebara |
 
-Wszystko zapisuje się na dysku komputera SCADA i przetrwa restart oraz UPDATE: progi alarmów i temat ntfy (`settings`), historia wykresów 10 min i 2 h (`scada_hist`, co minutę), alarmy z potwierdzeniami, dziennik zdarzeń i parametry startu żółwi (`scada_state`, co 30 s i po każdym dotknięciu). Przez pierwsze 20 s po starcie SCADA czeka na dane i nie przelicza alarmów.
+Pozycja w sidebarze miga na czerwono, gdy w jej kategorii jest niepotwierdzony alarm. W kategorii: dotknij nazwy grupy → wszystkie sekcje tej grupy; dotknij pozycji → **wykres** (10 min / 2 h), próg alarmu i (dla płynów) pojemność.
 
-`scada demo` pokazuje przykładowe dane bez żółwi i czujników.
+Kod SCADA jest podzielony na moduły w `scadalib/`: `app` (stan, narzędzia), `config` (progi), `data` (grupy, historia), `alarms` (alarmy, syrena, ntfy), `ui` (monitor, sidebar), `sections` (kategorie), `views` (ekrany).
+
+Zapisywane na dysku (przetrwa restart i UPDATE): progi i pojemności (`settings`), historia wykresów (`scada_hist`), alarmy i dziennik (`scada_state`). Przez pierwsze 20 s po starcie SCADA czeka na dane i nie przelicza alarmów.
+
+`scada demo` pokazuje przykładowe dane bez czujników.
 
 ## Alarmy
 
@@ -86,19 +97,17 @@ Wszystko zapisuje się na dysku komputera SCADA i przetrwa restart oraz UPDATE: 
 | mało płynu (np. lawy) | ALARM | ustawiasz dotykiem (domyślnie wył.) |
 | mało przedmiotu w magazynie | uwaga | ustawiasz dotykiem (domyślnie wył.) |
 | za niskie RPM | uwaga | ustawiasz dotykiem (domyślnie wył.) |
-| żółw czeka: brak paliwa / bloków / pochodni | ALARM | – |
-| żółw przerwał pracę (błąd) | ALARM (do potwierdzenia) | – |
-| żółw lub czujnik offline, mało paliwa | uwaga | – |
+| czujnik offline | uwaga | – |
 
-- **Pocket** (`pscada`, klawisz 3): te same alarmy, potwierdzanie zdalne.
-- **Syrena**: speakery podłączone do komputera SCADA (może ich być kilka, przez wired modemy). Alarm krytyczny: dzwon + syrena dwutonowa co 5 s do potwierdzenia; ostrzeżenie: dwa krótkie sygnały. Przycisk TEST SYRENY w zakładce ALM. Dźwięk: `set scada.siren bell|notes|horn` (horn = róg rajdu, bardzo głośny), głośność `set scada.siren_volume 3`.
+- **Pocket** (`pscada`, klawisz 2): te same alarmy, potwierdzanie zdalne.
+- **Syrena**: speakery podłączone do komputera SCADA (może ich być kilka, przez wired modemy). Alarm krytyczny: dzwon + syrena dwutonowa co 5 s do potwierdzenia; ostrzeżenie: dwa krótkie sygnały. Przycisk TEST SYRENY na dole sidebara. Dźwięk: `set scada.siren bell|notes|horn` (horn = róg rajdu, bardzo głośny), głośność `set scada.siren_volume 3`.
 - **Prawdziwy telefon** (opcjonalnie): aplikacja **ntfy**, zasubskrybuj swój tajny temat i na komputerze SCADA wpisz `set scada.ntfy <temat>`.
 
 ## Autostart i aktualizacja
 
 `autostart list` pokazuje, co startuje; `autostart add|remove <program>` (scada, sensor, diskstation). Kilka programów może działać razem na jednym komputerze; program, który się wywali, uruchamia się ponownie po 5 s.
 
-**Przycisk UPDATE** (zakładka ALM, dotknąć dwa razy) aktualizuje zdalnie wszystkie żółwie i czujniki, a potem samą SCADA z restartem. Pracujące żółwie są pomijane. Pockety aktualizujesz ręcznie (`update`).
+**Przycisk UPDATE** (na dole sidebara, dotknąć dwa razy) aktualizuje zdalnie wszystkie czujniki, a potem samą SCADA z restartem. Żółwie i pockety aktualizujesz ręcznie (`update`).
 
 ## Dyskietka instalacyjna
 

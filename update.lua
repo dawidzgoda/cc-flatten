@@ -1,8 +1,9 @@
 -- update.lua - pobiera najnowsze wersje programow z GitHuba
 -- Na zolwiu: flatten, torches, startup (listener), update
 -- Na pocket computerze: remote, pscada, update
--- Na zwyklym komputerze: scada, sensor (+ stare nazwy lavasensor/energysensor),
---                        autostart, mkdisk, diskstation, remote, update
+-- Na zwyklym komputerze: scada (+ moduly scadalib/), sensor (+ stare nazwy
+--                        lavasensor/energysensor), autostart, mkdisk,
+--                        diskstation, remote, update
 
 local REPO = "dawidzgoda/cc-flatten"
 
@@ -50,6 +51,10 @@ else
     { "remote.lua",       "remote" },
     { "update.lua",       "update" },
   }
+  -- moduly SCADA (scada.lua laduje je przez require)
+  for _, m in ipairs({ "app", "config", "data", "alarms", "ui", "sections", "views" }) do
+    files[#files + 1] = { "scadalib/" .. m .. ".lua", "scadalib/" .. m .. ".lua" }
+  end
 end
 
 if not http then error("HTTP jest wylaczone w configu CC: Tweaked") end
@@ -61,7 +66,7 @@ print((turtle and "Aktualizuje zolwia"
 local allOk = true
 for _, f in ipairs(files) do
   local src, dst = f[1], f[2]
-  write(("  %-8s "):format(dst))
+  write(("  %-12s "):format(dst:gsub("%.lua$", "")))
   local res, err = http.get(BASE .. src)
   if not res then
     print("BLAD: " .. tostring(err))
@@ -69,6 +74,8 @@ for _, f in ipairs(files) do
   else
     local body = res.readAll()
     res.close()
+    local dir = fs.getDir(dst)
+    if dir ~= "" and not fs.exists(dir) then fs.makeDir(dir) end
     local h = fs.open(dst, "w")
     h.write(body)
     h.close()
